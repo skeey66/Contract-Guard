@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # ChromaDB 설정
     chroma_persist_dir: str = str(DATA_DIR / "chroma")
-    chroma_collection: str = "lease_kb"
+    chroma_collection: str = "contract_kb"
 
     # 탐지 설정
     rule_score_threshold: float = 0.3

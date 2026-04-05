@@ -6,7 +6,7 @@ import re
 from backend.app.models.clause import Clause
 from backend.app.services.llm_service import get_llm
 from backend.app.services.retrieval_service import retrieve_similar
-from backend.app.rag.prompts import batch_analysis_prompt, format_references
+from backend.app.rag.prompts import get_analysis_prompt, get_no_reference_context, format_references
 
 logger = logging.getLogger(__name__)
 
@@ -103,20 +103,27 @@ def _repair_truncated_array(text: str) -> list[dict] | None:
     return results if results else None
 
 
-async def _analyze_batch(clauses: list[Clause]) -> tuple[str, list[dict]]:
+async def _analyze_batch(
+    clauses: list[Clause],
+    contract_type: str = "lease",
+) -> tuple[str, list[dict]]:
     """조항 배치를 LLM으로 분석하고 (응답 텍스트, 참고문헌) 반환."""
     batch_text = "\n".join(c.content for c in clauses)
-    references = retrieve_similar(batch_text)
-    reference_context = format_references(references)
+    references = retrieve_similar(batch_text, contract_type=contract_type)
+
+    ref_text = format_references(references)
+    if not ref_text:
+        ref_text = get_no_reference_context(contract_type)
 
     clauses_text = ""
     for clause in clauses:
         clauses_text += f"\n[{clause.index}] {clause.title}: {clause.content}\n"
 
+    prompt = get_analysis_prompt(contract_type)
     llm = get_llm()
-    messages = batch_analysis_prompt.format_messages(
+    messages = prompt.format_messages(
         clauses_text=clauses_text,
-        reference_context=reference_context,
+        reference_context=ref_text,
     )
 
     response = await llm.ainvoke(messages)
@@ -130,12 +137,15 @@ async def _analyze_batch(clauses: list[Clause]) -> tuple[str, list[dict]]:
     return _strip_thinking(text), references
 
 
-async def analyze_all_clauses(clauses: list[Clause]) -> dict:
+async def analyze_all_clauses(
+    clauses: list[Clause],
+    contract_type: str = "lease",
+) -> dict:
     """전체 조항을 배치로 나눠 병렬 LLM 호출로 분석."""
     batches = [clauses[i:i + BATCH_SIZE] for i in range(0, len(clauses), BATCH_SIZE)]
-    logger.info(f"LLM 분석 시작: {len(clauses)}개 조항, {len(batches)}개 배치")
+    logger.info(f"LLM 분석 시작: {len(clauses)}개 조항, {len(batches)}개 배치 (유형: {contract_type})")
 
-    tasks = [_analyze_batch(batch) for batch in batches]
+    tasks = [_analyze_batch(batch, contract_type) for batch in batches]
     responses = await asyncio.gather(*tasks, return_exceptions=True)
 
     all_parsed = []

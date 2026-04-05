@@ -39,11 +39,25 @@ def add_documents(
     vs.add_documents(docs, ids=ids)
 
 
-def query(query_text: str, k: int = 5) -> list[tuple[Document, float]]:
+def query(
+    query_text: str,
+    k: int = 5,
+    contract_type: str | None = None,
+) -> list[tuple[Document, float]]:
     vs = get_vectorstore()
     if len(vs.get()["ids"]) == 0:
         return []
-    return vs.similarity_search_with_relevance_scores(query_text, k=k)
+    filter_dict = None
+    if contract_type:
+        filter_dict = {
+            "$or": [
+                {"contract_type": contract_type},
+                {"contract_type": "common"},
+            ]
+        }
+    return vs.similarity_search_with_relevance_scores(
+        query_text, k=k, filter=filter_dict,
+    )
 
 
 def collection_status() -> dict:

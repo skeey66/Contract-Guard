@@ -17,8 +17,9 @@ def split_clauses(text: str) -> list[Clause]:
             content = parts[i + 1].strip() if i + 1 < len(parts) else ""
             # 조항 번호를 인덱스로 사용 (제9조 → index 9)
             clause_num = int(title_match.group(2))
-            if content:
-                clauses.append(Clause(index=clause_num, title=title, content=content))
+            # 한 줄짜리 조항은 title 자체가 content
+            full_content = f"{title}\n{content}" if content else title
+            clauses.append(Clause(index=clause_num, title=title, content=full_content))
             i += 2
         else:
             i += 1

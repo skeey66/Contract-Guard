@@ -9,8 +9,9 @@ async def run_analysis(
     document_id: str,
     filename: str,
     clauses: list[Clause],
+    contract_type: str = "lease",
 ) -> AnalysisResult:
-    result = await analyze_all_clauses(clauses)
+    result = await analyze_all_clauses(clauses, contract_type=contract_type)
     parsed_list = result["parsed_list"]
     references = result["references"]
 
