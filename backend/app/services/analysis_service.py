@@ -13,9 +13,9 @@ async def run_analysis(
 ) -> AnalysisResult:
     result = await analyze_all_clauses(clauses, contract_type=contract_type)
     parsed_list = result["parsed_list"]
-    references = result["references"]
+    per_clause_refs = result["per_clause_refs"]
 
-    clause_analyses = _build_clause_analyses(parsed_list, clauses, references)
+    clause_analyses = _build_clause_analyses(parsed_list, clauses, per_clause_refs)
 
     risky = [ca for ca in clause_analyses if ca.risk_level != RiskLevel.SAFE]
     summary = _generate_summary(clause_analyses, risky)
@@ -34,14 +34,9 @@ async def run_analysis(
 def _build_clause_analyses(
     parsed_list: list[dict],
     clauses: list[Clause],
-    references: list[dict],
+    per_clause_refs: dict[int, list[dict]],
 ) -> list[ClauseAnalysis]:
-    similar_refs = [
-        f"{ref.get('text', '')[:80]}... (유사도: {ref.get('similarity', 0):.2f})"
-        for ref in references
-    ]
-
-    # clause_index → parsed 매핑 (빠른 조회용)
+    # clause_index → parsed 매핑 (정확한 매칭만 사용)
     index_map = {}
     for item in parsed_list:
         ci = item.get("clause_index")
@@ -49,17 +44,8 @@ def _build_clause_analyses(
             index_map[ci] = item
 
     analyses = []
-    for pos, clause in enumerate(clauses):
-        parsed = None
-        if parsed_list:
-            # 1순위: 정확한 clause_index 매칭
-            parsed = index_map.get(clause.index)
-            # 2순위: LLM이 0-based로 반환한 경우 (clause_index - 1 보정)
-            if parsed is None:
-                parsed = index_map.get(clause.index - 1)
-            # 3순위: 위치 기반 fallback
-            if parsed is None and pos < len(parsed_list):
-                parsed = parsed_list[pos]
+    for clause in clauses:
+        parsed = index_map.get(clause.index)
 
         if parsed:
             risk_level = _parse_risk_level(parsed.get("risk_level", "safe"))
@@ -80,6 +66,13 @@ def _build_clause_analyses(
             confidence = 0.3
             risks = []
             explanation = "분석 결과를 파싱하지 못했습니다."
+
+        # 해당 조항 전용 참고문헌 사용
+        clause_refs = per_clause_refs.get(clause.index, [])
+        similar_refs = [
+            f"{ref.get('text', '')[:80]}... (유사도: {ref.get('similarity', 0):.2f})"
+            for ref in clause_refs
+        ]
 
         analyses.append(ClauseAnalysis(
             clause_index=clause.index,

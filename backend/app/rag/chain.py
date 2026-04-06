@@ -10,8 +10,6 @@ from backend.app.rag.prompts import get_analysis_prompt, get_no_reference_contex
 
 logger = logging.getLogger(__name__)
 
-BATCH_SIZE = 3
-
 
 def _strip_thinking(text: str) -> str:
     """thinking 태그 내용을 제거하고 실제 응답만 반환."""
@@ -103,21 +101,18 @@ def _repair_truncated_array(text: str) -> list[dict] | None:
     return results if results else None
 
 
-async def _analyze_batch(
-    clauses: list[Clause],
+async def _analyze_single_clause(
+    clause: Clause,
     contract_type: str = "lease",
-) -> tuple[str, list[dict]]:
-    """조항 배치를 LLM으로 분석하고 (응답 텍스트, 참고문헌) 반환."""
-    batch_text = "\n".join(c.content for c in clauses)
-    references = retrieve_similar(batch_text, contract_type=contract_type)
+) -> tuple[Clause, str, list[dict]]:
+    """단일 조항을 LLM으로 분석하고 (원본 조항, 응답 텍스트, 참고문헌) 반환."""
+    references = retrieve_similar(clause.content, contract_type=contract_type)
 
     ref_text = format_references(references)
     if not ref_text:
         ref_text = get_no_reference_context(contract_type)
 
-    clauses_text = ""
-    for clause in clauses:
-        clauses_text += f"\n[{clause.index}] {clause.title}: {clause.content}\n"
+    clauses_text = f"\n[{clause.index}] {clause.title}: {clause.content}\n"
 
     prompt = get_analysis_prompt(contract_type)
     llm = get_llm()
@@ -134,49 +129,44 @@ async def _analyze_batch(
     if not text:
         text = str(response)
 
-    return _strip_thinking(text), references
+    return clause, _strip_thinking(text), references
 
 
 async def analyze_all_clauses(
     clauses: list[Clause],
     contract_type: str = "lease",
 ) -> dict:
-    """전체 조항을 배치로 나눠 병렬 LLM 호출로 분석."""
-    batches = [clauses[i:i + BATCH_SIZE] for i in range(0, len(clauses), BATCH_SIZE)]
-    logger.info(f"LLM 분석 시작: {len(clauses)}개 조항, {len(batches)}개 배치 (유형: {contract_type})")
+    """전체 조항을 조항별 개별 LLM 호출로 분석."""
+    logger.info(f"LLM 분석 시작: {len(clauses)}개 조항 개별 분석 (유형: {contract_type})")
 
-    tasks = [_analyze_batch(batch, contract_type) for batch in batches]
+    tasks = [_analyze_single_clause(clause, contract_type) for clause in clauses]
     responses = await asyncio.gather(*tasks, return_exceptions=True)
 
     all_parsed = []
-    all_references = []
+    per_clause_refs: dict[int, list[dict]] = {}
+
     for i, resp in enumerate(responses):
         if isinstance(resp, Exception):
-            logger.error(f"배치 {i} 실패: {resp}")
+            logger.error(f"조항 {clauses[i].index} 분석 실패: {resp}")
             continue
-        text, refs = resp
-        all_references.extend(refs)
+
+        clause, text, refs = resp
+        per_clause_refs[clause.index] = refs
+
         parsed = _extract_json_from_response(text)
 
         if not parsed:
-            logger.warning(f"배치 {i} 파싱 실패. LLM 원문:\n{text[:500]}")
+            logger.warning(f"조항 {clause.index} 파싱 실패. LLM 원문:\n{text[:500]}")
         else:
-            logger.info(f"배치 {i}: {len(parsed)}개 조항 파싱 성공")
-
-        all_parsed.extend(parsed)
-
-    # 중복 참고문헌 제거
-    seen_texts = set()
-    unique_refs = []
-    for ref in all_references:
-        t = ref.get("text", "")[:100]
-        if t not in seen_texts:
-            seen_texts.add(t)
-            unique_refs.append(ref)
+            # 단일 조항 분석이므로 첫 번째 결과를 해당 조항에 강제 매핑
+            result = parsed[0]
+            result["clause_index"] = clause.index
+            all_parsed.append(result)
+            logger.info(f"조항 {clause.index} 파싱 성공")
 
     logger.info(f"총 {len(all_parsed)}/{len(clauses)}개 조항 파싱 완료")
 
     return {
         "parsed_list": all_parsed,
-        "references": unique_refs,
+        "per_clause_refs": per_clause_refs,
     }
