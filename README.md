@@ -1,25 +1,26 @@
 # Contract Guard
 
-AI 기반 임대차 계약서 위험 조항 분석 서비스입니다.
-LLM + RAG로 세입자에게 불리한 조항을 자동 탐지하고 개선안을 제시합니다.
-
+로컬 LLM과 RAG 기술을 활용한 보안 특화형 AI 계약서 위험 조항 분석 시스템입니다.
+외부 API 호출 없이 온프레미스 환경에서 동작하며, 계약서 내 불공정 조항을 자동 탐지하고 개선안을 제시합니다.
 
 ---
 
 ## 동작 흐름
 
 ```
-PDF 업로드 (사용자)
+PDF 업로드
   ↓
 텍스트 추출 (PyMuPDF)
   ↓
-조항 분리 (제n조 패턴)
+계약 유형 자동 감지 (임대차 / 매매 / 근로)
+  ↓
+조항 분리 (제N조 패턴 + 단락 폴백)
   ↓
 유사 법률·판례 검색 (ChromaDB + Ko-SBERT)
   ↓
-LLM 배치 분석 (Ollama)
+LLM 배치 분석 (Ollama · qwen3:8b)
   ↓
-위험도 분류 + 개선안 생성 → 결과 화면 (React)
+위험도 분류 + 개선안 → 결과 화면 (React)
 ```
 
 각 조항에 대해 **위험도(high/medium/low/safe)**, 신뢰도 점수, 위험 유형, 설명, 개선 제안, 유사 참고 조항을 제공합니다.
@@ -28,14 +29,23 @@ LLM 배치 분석 (Ollama)
 
 ## 주요 기능
 
-| 기능 | 설명 |
-|------|------|
-| PDF 업로드 & 즉시 분석 | 계약서 PDF를 올리면 조항별 위험도를 바로 확인 |
-| 조항 자동 분리 | `제 n조` 패턴 인식 + 단락 기반 fallback |
-| RAG 기반 분석 | 1,679건의 약관·판결문 지식베이스에서 유사 조항 검색 |
-| 8가지 위험 유형 탐지 | 보증금 미반환, 일방적 해지, 수선의무 전가, 위약금 과다 등 |
-| 분석 결과 시각화 | 위험도 게이지, 등급별 배지, 확장 가능한 조항 카드 |
-| 분석 결과 저장 & 조회 | JSON 파일 저장 후 API로 재조회 가능 |
+- **PDF 업로드 & 즉시 분석** — 계약서 PDF를 올리면 조항별 위험도를 바로 확인
+- **계약 유형 자동 감지** — 키워드 빈도 기반으로 임대차/매매/근로 유형을 자동 판별
+- **조항 자동 분리** — `제N조` 패턴 인식, 매칭 실패 시 단락 기반 폴백
+- **RAG 기반 분석** — 법률 조항·판례 지식베이스에서 조항별 유사 근거 검색
+- **계약 유형별 위험 유형 탐지** — 유형별 8가지 위험 유형 (보증금 미반환, 하자담보 면제, 부당해고 등)
+- **분석 결과 시각화** — 위험도 배지, 조항 카드, 유사 참고 조항 표시
+- **완전 로컬 실행** — 외부 API 호출 없이 온프레미스에서 동작, 계약서 데이터 유출 방지
+
+---
+
+## 지원 계약 유형
+
+| 유형 | 분석 관점 | 위험 유형 예시 |
+|------|-----------|---------------|
+| 임대차 | 임차인(세입자) | 보증금 미반환, 일방적 해지, 수선의무 전가, 묵시적 갱신 배제 등 |
+| 매매 | 매수인(구매자) | 하자담보 면제, 소유권이전 지연, 계약금 과다, 권리하자 미고지 등 |
+| 근로 | 근로자(직원) | 임금 부당, 부당해고, 경업금지 과다, 연차 미보장, 퇴직금 미지급 등 |
 
 ---
 
@@ -44,7 +54,7 @@ LLM 배치 분석 (Ollama)
 ### Backend
 - **FastAPI** + Uvicorn — REST API 서버
 - **LangChain** + langchain-ollama — LLM 오케스트레이션
-- **ChromaDB** — 벡터 데이터베이스 (persist: `data/chroma`)
+- **ChromaDB** — 벡터 데이터베이스 (법률·판례 지식베이스)
 - **HuggingFace** — 한국어 임베딩 (`jhgan/ko-sroberta-multitask`)
 - **PyMuPDF** — PDF 텍스트 추출
 
@@ -64,29 +74,32 @@ LLM 배치 분석 (Ollama)
 Contract-Guard/
 ├── backend/
 │   ├── app/
-│   │   ├── api/            # 엔드포인트 (health, upload, analyses, kb)
+│   │   ├── api/            # 엔드포인트 (health, documents, analyses, kb)
 │   │   ├── models/         # Pydantic 모델 (analysis, clause, risk)
-│   │   ├── services/       # 비즈니스 로직 (pdf, clause, llm, chroma, retrieval, analysis)
+│   │   ├── services/       # 비즈니스 로직 (pdf, clause, llm, chroma, retrieval, analysis, embedding)
 │   │   ├── rag/            # 프롬프트 템플릿 + 배치 분석 체인
 │   │   ├── utils/          # 파일 유틸리티
 │   │   ├── config.py       # 환경변수 기반 설정
+│   │   ├── contract_types.py  # 계약 유형별 프롬프트·위험유형·내장 KB 정의
 │   │   └── main.py         # FastAPI 앱 진입점
-│   ├── scripts/            # KB 구축, 테스트 PDF 생성, 검증 스크립트
+│   ├── scripts/
+│   │   ├── build_kb.py     # 지식베이스 구축
+│   │   └── validate.py     # 분석 정확도 검증
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
 │   │   ├── pages/          # UploadPage, ResultPage
-│   │   ├── components/     # FileUploader, ClauseCard, RiskBadge, ConfidenceBar
+│   │   ├── components/     # FileUploader, RiskBadge
 │   │   ├── api/            # Axios 클라이언트
-│   │   └── styles/         # 글로벌 CSS (골드/블랙 테마)
+│   │   └── styles/         # 글로벌 CSS
 │   ├── vite.config.js
 │   └── package.json
 ├── data/
 │   ├── chroma/             # ChromaDB 벡터 저장소
 │   ├── uploads/            # 업로드된 PDF 원본
 │   └── results/            # 분석 결과 JSON
-├── start.sh                # 전체 서비스 시작
-├── stop.sh                 # 전체 서비스 종료
+├── start.sh / start.bat    # 전체 서비스 시작 (Linux/Windows)
+├── stop.sh / stop.bat      # 전체 서비스 종료
 ├── .env.example            # 환경변수 템플릿
 └── README.md
 ```
@@ -102,54 +115,60 @@ Contract-Guard/
 - [Ollama](https://ollama.ai) 설치
 
 ```bash
-# LLM 모델 다운로드
 ollama pull qwen3:8b
 ```
 
-### 방법 1: 스크립트로 한 번에 실행
+### 설치
 
 ```bash
-cp .env.example .env        # 환경변수 설정
-./start.sh                  # Ollama + 백엔드 + 프론트엔드 일괄 시작
-```
+# 환경변수 설정
+cp .env.example .env
 
-종료:
-
-```bash
-./stop.sh
-```
-
-### 방법 2: 개별 실행
-
-```bash
-# 1. 백엔드
+# 백엔드 의존성
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r backend/requirements.txt
-uvicorn backend.app.main:app --reload --port 8000
 
-# 2. 프론트엔드
-cd frontend
-npm install
-npm run dev
+# 프론트엔드 의존성
+cd frontend && npm install && cd ..
 ```
 
-### 접속 URL
+### 실행
+
+```bash
+# 방법 1: 스크립트로 한 번에 실행
+./start.sh          # Linux/Mac
+start.bat           # Windows
+
+# 방법 2: 개별 실행
+ollama serve
+uvicorn backend.app.main:app --reload --port 8000
+cd frontend && npm run dev
+```
+
+### 종료
+
+```bash
+./stop.sh           # Linux/Mac
+stop.bat            # Windows
+```
+
+### 접속
 
 | 서비스 | URL |
 |--------|-----|
-| Frontend | `http://localhost:5173` |
-| Backend API | `http://localhost:8000` |
-| Swagger Docs | `http://localhost:8000/docs` |
+| 프론트엔드 | http://localhost:5173 |
+| 백엔드 API | http://localhost:8000 |
+| API 문서 (Swagger) | http://localhost:8000/docs |
 
 ---
 
 ## 지식베이스(KB) 구축
 
-분석 품질 향상을 위해 초기 인덱싱을 권장합니다.
+내장 법률 데이터(주택임대차보호법, 민법, 근로기준법 등)만으로도 분석이 가능하지만, 추가 데이터로 품질을 향상시킬 수 있습니다.
 
 ```bash
-# 기본 법률/실무 데이터로 구축
+# 내장 법률 데이터로 구축
 python -m backend.scripts.build_kb
 
 # AI Hub 원천 데이터 포함 시
@@ -169,10 +188,10 @@ curl http://localhost:8000/api/kb/status
 |------|--------|------|
 | `OLLAMA_MODEL_NAME` | `qwen3:8b` | Ollama LLM 모델 |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama 서버 주소 |
-| `OLLAMA_TIMEOUT` | `300` | LLM 호출 타임아웃 (초) |
-| `OLLAMA_NUM_PARALLEL` | `2` | Ollama 병렬 처리 수 |
+| `OLLAMA_TIMEOUT` | `180` | LLM 호출 타임아웃 (초) |
+| `EMBEDDING_MODEL` | `jhgan/ko-sroberta-multitask` | 한국어 임베딩 모델 |
 | `EMBEDDING_DEVICE` | `auto` | 임베딩 디바이스 (`auto`/`cpu`/`cuda`) |
-| `CHROMA_COLLECTION` | `lease_kb` | ChromaDB 컬렉션명 |
+| `CHROMA_COLLECTION` | `contract_kb` | ChromaDB 컬렉션명 |
 | `RETRIEVAL_TOP_K` | `5` | 유사 조항 검색 개수 |
 | `RETRIEVAL_MIN_SCORE` | `0.5` | 최소 유사도 점수 |
 
@@ -200,7 +219,7 @@ curl http://localhost:8000/api/kb/status
     "summary": "총 11개 조항 중 6개 조항에서 위험 요소가 발견되었습니다...",
     "clause_analyses": [
       {
-        "clause_index": 3,
+        "clause_index": 4,
         "clause_title": "제4조 (보증금 반환)",
         "risk_level": "high",
         "confidence": 0.88,
@@ -229,36 +248,22 @@ curl http://localhost:8000/api/kb/status
 # 지식베이스 구축
 python -m backend.scripts.build_kb
 
-# 확장 KB 인덱싱 (대용량 샘플 데이터)
-python -m backend.scripts.index_kb
-
-# 테스트용 계약서 PDF 생성
-pip install fpdf2
-python -m backend.scripts.generate_test_pdf
+# AI Hub 데이터 포함 KB 구축
+python -m backend.scripts.build_kb --data-dir data/raw/aihub
 
 # 분석 정확도 검증
 python -m backend.scripts.validate
+python -m backend.scripts.validate --limit 20    # 일부만 테스트
 ```
-
----
-
-## 분석 정확도
-
-AI Hub 임대차 약관 데이터를 활용한 검증 결과:
-
-- KB 규모: 약관 538건 + 판결문 1,089건 = **1,679건**
-- 불리 조항 탐지율(Recall): **100%**
-- 전체 정확도: **85%**
-- 거짓 경보(False Positive): 3건
 
 ---
 
 ## 알려진 제한 사항
 
 - 분석 정확도는 LLM 모델 성능, 프롬프트, KB 품질에 의존합니다.
-- 프론트엔드 결과는 라우팅 state 기반으로, 새로고침 시 사라질 수 있습니다.
-- 인증/인가, 파일 크기 제한, 비동기 작업 큐, 결과 DB 저장소 등은 미구현 상태입니다.
-- 자동화 테스트는 아직 준비되지 않았습니다.
+- 프론트엔드 결과는 라우팅 state 기반으로, 새로고침 시 소실됩니다.
+- PDF 형식만 지원합니다 (HWP, DOCX 미지원).
+- 인증/인가, 파일 크기 제한, 비동기 작업 큐 등은 미구현 상태입니다.
 
 ---
 
