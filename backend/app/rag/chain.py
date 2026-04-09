@@ -118,6 +118,22 @@ def _extract_json_from_response(text: str) -> list[dict]:
         if valid:
             return valid
 
+    # 7. 최후 폴백 — 정규식으로 clause_index/risk_level만 추출
+    # (risks 배열이 과도하게 커서 완성된 객체가 없는 케이스 구제)
+    head_match = re.search(
+        r'"clause_index"\s*:\s*(\d+).*?"risk_level"\s*:\s*"(safe|low|medium|high)"',
+        text,
+        re.DOTALL,
+    )
+    if head_match:
+        return [{
+            "clause_index": int(head_match.group(1)),
+            "risk_level": head_match.group(2),
+            "confidence": 0.7,
+            "risks": [],
+            "explanation": "[JSON 잘림 — 최소 정보만 복구]",
+        }]
+
     return []
 
 
