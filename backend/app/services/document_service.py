@@ -1,9 +1,10 @@
 from pathlib import Path
 import fitz  # PyMuPDF
 from docx import Document
+from hwp2yaml import extract_hwp_text
 
 # 지원 확장자 → 추출 함수 매핑
-SUPPORTED_EXTENSIONS = {".pdf", ".docx"}
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".hwp", ".hwpx"}
 
 
 def extract_text(file_path: str) -> tuple[str, int]:
@@ -13,6 +14,8 @@ def extract_text(file_path: str) -> tuple[str, int]:
     return _extract_pdf(file_path)
   if ext == ".docx":
     return _extract_docx(file_path)
+  if ext in (".hwp", ".hwpx"):
+    return _extract_hwp(file_path)
   raise ValueError(f"지원하지 않는 파일 형식: {ext}")
 
 
@@ -43,3 +46,12 @@ def _extract_docx(path: str) -> tuple[str, int]:
             blocks.append(text)
 
   return "\n".join(blocks), len(blocks)
+
+
+def _extract_hwp(path: str) -> tuple[str, int]:
+  result = extract_hwp_text(path)
+  if not result.success:
+    raise ValueError(f"HWP 텍스트 추출 실패: {result.error}")
+
+  lines = [line.strip() for line in result.text.split("\n") if line.strip()]
+  return "\n".join(lines), len(lines)

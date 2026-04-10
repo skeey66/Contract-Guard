@@ -10,3 +10,4 @@ langchain-ollama
 langchain-huggingface
 sentence-transformers
 langchain-chroma
+hwp2yaml
