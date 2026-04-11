@@ -1,5 +1,48 @@
+import logging
+
 from backend.app.services import chroma_service
+from backend.app.services import bm25_service
 from backend.app.config import settings
+
+logger = logging.getLogger(__name__)
+
+# RRF 상수 (k가 클수록 하위 순위 문서의 영향력 증가)
+RRF_K = 60
+
+
+def _rrf_combine(
+    vector_results: list[tuple[str, dict]],
+    bm25_results: list[tuple[str, dict]],
+    top_k: int,
+) -> list[dict]:
+    """RRF(Reciprocal Rank Fusion)로 두 검색 결과를 결합.
+
+    각 결과는 (doc_id, entry_dict) 형태.
+    """
+    scores: dict[str, float] = {}
+    entries: dict[str, dict] = {}
+
+    # 벡터 검색 순위 반영
+    for rank, (doc_id, entry) in enumerate(vector_results):
+        scores[doc_id] = scores.get(doc_id, 0) + 1.0 / (RRF_K + rank + 1)
+        entries[doc_id] = entry
+
+    # BM25 검색 순위 반영
+    for rank, (doc_id, entry) in enumerate(bm25_results):
+        scores[doc_id] = scores.get(doc_id, 0) + 1.0 / (RRF_K + rank + 1)
+        if doc_id not in entries:
+            entries[doc_id] = entry
+
+    # RRF 점수 기준 정렬
+    ranked_ids = sorted(scores, key=lambda x: scores[x], reverse=True)[:top_k]
+
+    results = []
+    for doc_id in ranked_ids:
+        entry = entries[doc_id]
+        entry["rrf_score"] = round(scores[doc_id], 6)
+        results.append(entry)
+
+    return results
 
 
 def retrieve_similar(
@@ -7,28 +50,51 @@ def retrieve_similar(
     top_k: int | None = None,
     contract_type: str | None = None,
 ) -> list[dict]:
-    """텍스트와 유사한 법률 조항을 ChromaDB에서 검색."""
+    """BM25 + 벡터 하이브리드 검색 후 RRF로 결합."""
     k = top_k or settings.retrieval_top_k
-    results = chroma_service.query(text, k=k, contract_type=contract_type)
 
-    similar = []
-    best = None
-    for doc, score in results:
+    # 벡터 검색 (ChromaDB)
+    vector_raw = chroma_service.query(text, k=k, contract_type=contract_type)
+    vector_results: list[tuple[str, dict]] = []
+    for doc, score in vector_raw:
+        doc_id = doc.metadata.get("id", doc.page_content[:80])
         entry = {
-            "id": doc.metadata.get("id", ""),
+            "id": doc_id,
             "text": doc.page_content,
             "similarity": round(score, 4),
             "metadata": doc.metadata,
         }
-        # 최소 점수 이상이면 포함
-        if score >= settings.retrieval_min_score:
-            similar.append(entry)
-        # 점수 미달이어도 가장 높은 1건은 후보로 보관
-        elif best is None or score > best["similarity"]:
-            best = entry
+        vector_results.append((doc_id, entry))
 
-    # 결과가 0건이면 가장 유사한 1건이라도 반환
-    if not similar and best:
-        similar.append(best)
+    # BM25 검색
+    bm25_raw = bm25_service.search(text, k=k, contract_type=contract_type)
+    bm25_results: list[tuple[str, dict]] = []
+    for doc_dict, score in bm25_raw:
+        doc_id = doc_dict.get("id", doc_dict["text"][:80])
+        entry = {
+            "id": doc_id,
+            "text": doc_dict["text"],
+            "similarity": round(score, 4),
+            "metadata": doc_dict.get("metadata", {}),
+        }
+        bm25_results.append((doc_id, entry))
 
-    return similar
+    # 양쪽 모두 결과가 없으면 빈 리스트
+    if not vector_results and not bm25_results:
+        return []
+
+    # 한쪽만 있으면 해당 결과만 반환
+    if not bm25_results:
+        logger.debug("BM25 결과 없음, 벡터 검색 결과만 사용")
+        return [entry for _, entry in vector_results]
+    if not vector_results:
+        logger.debug("벡터 검색 결과 없음, BM25 결과만 사용")
+        return [entry for _, entry in bm25_results]
+
+    # RRF 결합
+    combined = _rrf_combine(vector_results, bm25_results, top_k=k)
+    logger.debug(
+        f"하이브리드 검색 완료: 벡터 {len(vector_results)}건, "
+        f"BM25 {len(bm25_results)}건 → RRF {len(combined)}건"
+    )
+    return combined

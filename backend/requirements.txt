@@ -11,3 +11,4 @@ langchain-huggingface
 sentence-transformers
 langchain-chroma
 hwp2yaml
+rank-bm25

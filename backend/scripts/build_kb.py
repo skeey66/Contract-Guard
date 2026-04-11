@@ -223,8 +223,9 @@ def load_aihub_data(data_dir: str) -> list[dict]:
 
 def build_knowledge_base(data_dir: str | None = None):
     from backend.app.services import chroma_service
+    from backend.app.services import bm25_service
 
-    print("[1/2] 데이터 수집 중...")
+    print("[1/3] 데이터 수집 중...")
     items = get_all_builtin_data()
 
     type_counts = {}
@@ -240,7 +241,7 @@ def build_knowledge_base(data_dir: str | None = None):
         print(f"  AI HUB 데이터: {len(aihub_items)}건")
         items.extend(aihub_items)
 
-    print(f"[2/2] 임베딩 생성 + ChromaDB 저장 중... (총 {len(items)}건)")
+    print(f"[2/3] 임베딩 생성 + ChromaDB 저장 중... (총 {len(items)}건)")
     ids = [item["id"] for item in items]
     texts = [item["text"] for item in items]
     metadatas = [item.get("metadata", {}) for item in items]
@@ -255,7 +256,11 @@ def build_knowledge_base(data_dir: str | None = None):
         )
 
     status = chroma_service.collection_status()
-    print(f"완료! 컬렉션 '{status['name']}' 에 {status['count']}건 저장됨.")
+    print(f"  ChromaDB 컬렉션 '{status['name']}' 에 {status['count']}건 저장됨.")
+
+    print(f"[3/3] BM25 인덱스 구축 중... (총 {len(items)}건)")
+    bm25_service.build_all_indices(items)
+    print("완료! ChromaDB + BM25 하이브리드 검색 준비 완료.")
 
 
 if __name__ == "__main__":

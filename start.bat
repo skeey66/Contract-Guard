@@ -1,5 +1,6 @@
 @echo off
 chcp 65001 >nul
+setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 echo === K^&H2 시작 ===
@@ -15,8 +16,14 @@ curl -s http://localhost:11434/api/tags >nul 2>&1 && (echo   -^> Ollama OK) || (
 :: 2. 백엔드 시작
 echo [2/3] 백엔드 시작 (port 8000)...
 start /B "" cmd /c ".venv\Scripts\activate && uvicorn backend.app.main:app --host 0.0.0.0 --port 8000" >nul 2>&1
-timeout /t 4 /nobreak >nul
-curl -s http://localhost:8000/health >nul 2>&1 && (echo   -^> 백엔드 OK) || (echo   -^> 백엔드 실패)
+set BACKEND_OK=0
+for /L %%i in (1,1,15) do (
+  if !BACKEND_OK!==0 (
+    timeout /t 2 /nobreak >nul
+    curl -s http://localhost:8000/health >nul 2>&1 && set BACKEND_OK=1
+  )
+)
+if !BACKEND_OK!==1 (echo   -^> 백엔드 OK) else (echo   -^> 백엔드 실패 ^(30초 초과^))
 
 :: 3. 프론트엔드 시작
 echo [3/3] 프론트엔드 시작 (port 5173)...
