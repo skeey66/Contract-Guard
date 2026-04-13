@@ -44,9 +44,10 @@ def query(
     k: int = 5,
     contract_type: str | None = None,
 ) -> list[tuple[Document, float]]:
-    vs = get_vectorstore()
-    if len(vs.get()["ids"]) == 0:
+    # 빈 컬렉션 체크는 count()로 — 전체 id 로딩(vs.get())은 매 쿼리마다 수천건을 로드하므로 피한다
+    if _get_raw_client().get_or_create_collection(settings.chroma_collection).count() == 0:
         return []
+    vs = get_vectorstore()
     filter_dict = None
     if contract_type:
         filter_dict = {

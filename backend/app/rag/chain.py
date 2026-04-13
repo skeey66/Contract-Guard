@@ -2,14 +2,38 @@ import asyncio
 import json
 import logging
 import re
+import time
+from pathlib import Path
 
 from backend.app.models.clause import Clause
+from backend.app.config import DATA_DIR
 from backend.app.services.llm_service import get_llm
 from backend.app.services.retrieval_service import retrieve_similar
 from backend.app.services.rule_filter import check_safe_rule, check_high_rule
-from backend.app.rag.prompts import get_analysis_prompt, get_no_reference_context, format_references
+from backend.app.rag.prompts import (
+    get_analysis_prompt,
+    get_no_reference_context,
+    format_references,
+    format_parties,
+)
 
 logger = logging.getLogger(__name__)
+
+_PARSE_DEBUG_DIR = Path(DATA_DIR) / "debug" / "parse_failures"
+
+
+def _dump_parse_failure(clause_index: int, status: str, text: str) -> str:
+    """파싱 실패 시 LLM 원문을 파일로 덤프. 원인 분석에 사용."""
+    try:
+        _PARSE_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        fname = f"{ts}_clause{clause_index}_{status}.txt"
+        fpath = _PARSE_DEBUG_DIR / fname
+        fpath.write_text(text or "<EMPTY>", encoding="utf-8")
+        return str(fpath)
+    except Exception as e:
+        logger.error(f"덤프 실패: {e}")
+        return ""
 
 # Ollama 동시 요청 수 제한 (병목 방지)
 _LLM_SEMAPHORE = asyncio.Semaphore(3)
@@ -192,6 +216,7 @@ async def _invoke_llm(llm, messages) -> str:
 
 _SAFE_EXPLANATIONS = {
     "목적물 식별 기재": "임대 목적물의 소재지와 면적을 특정하는 기본 기재 사항으로, 법적 위험이 없는 조항입니다.",
+    "단순 임대 조건 기재": "임대 목적물과 보증금·월차임 금액만을 명시한 단순 사실 기재 조항으로, 임차인에게 위험 요소가 없는 기본 조항입니다.",
     "단순 금액·납부일정 기재": "보증금, 차임 등 금액과 납부 일정을 기재한 조항으로, 특별한 위험 요소가 없습니다.",
     "종료일 보증금 반환": "임대차 종료 시 보증금 반환을 규정한 조항으로, 임차인의 권리를 보장하는 내용입니다.",
     "법정 증액 한도 준수": "주택임대차보호법 제7조에 따른 연 5% 이내 증액 한도를 준수하고 있어 안전합니다.",
@@ -241,8 +266,13 @@ def _rule_high_result(clause: Clause, risk_type: str, reason: str) -> dict:
 async def _analyze_single_clause(
     clause: Clause,
     contract_type: str = "lease",
-) -> tuple[Clause, str, list[dict]]:
-    """단일 조항을 LLM으로 분석. 세마포어로 동시 요청 제한, 파싱 실패 시 1회 재시도."""
+    parties: dict[str, str] | None = None,
+) -> tuple[Clause, str, list[dict], str]:
+    """단일 조항을 LLM으로 분석. 세마포어로 동시 요청 제한, 파싱 실패 시 1회 재시도.
+
+    반환값 4번째 원소는 상태 힌트: "ok" | "timeout" | "empty" | "parse_failed".
+    호출자는 이 힌트로 무음 폴백을 가시화한다.
+    """
     references = retrieve_similar(clause.content, contract_type=contract_type)
 
     ref_text = format_references(references)
@@ -256,9 +286,11 @@ async def _analyze_single_clause(
     messages = prompt.format_messages(
         clauses_text=clauses_text,
         reference_context=ref_text,
+        parties_text=format_parties(parties),
     )
 
     last_text = ""
+    last_status = "empty"
     for attempt in range(1 + MAX_RETRIES):
         try:
             async with _LLM_SEMAPHORE:
@@ -268,28 +300,32 @@ async def _analyze_single_clause(
                 )
         except asyncio.TimeoutError:
             logger.warning(f"조항 {clause.index} 타임아웃 ({PER_CLAUSE_TIMEOUT}초, 시도 {attempt + 1})")
+            last_status = "timeout"
             continue
 
         if not text:
             logger.warning(f"조항 {clause.index} 빈 응답 (시도 {attempt + 1})")
+            last_status = "empty"
             continue
 
         parsed = _extract_json_from_response(text)
         if parsed:
-            return clause, text, references
+            return clause, text, references, "ok"
 
         last_text = text
+        last_status = "parse_failed"
         logger.warning(
             f"조항 {clause.index} 파싱 실패 (시도 {attempt + 1}/{1 + MAX_RETRIES}). "
             f"응답 앞부분: {text[:200]}"
         )
 
-    return clause, last_text, references
+    return clause, last_text, references, last_status
 
 
 async def analyze_all_clauses(
     clauses: list[Clause],
     contract_type: str = "lease",
+    parties: dict[str, str] | None = None,
 ) -> dict:
     """전체 조항을 조항별 개별 LLM 호출로 분석.
 
@@ -302,39 +338,90 @@ async def analyze_all_clauses(
     all_parsed = []
     per_clause_refs: dict[int, list[dict]] = {}
 
-    # 1단계: 사전 safe 룰로 LLM 호출 대상 필터링
+    # 1단계: 사전 safe / high 룰로 LLM 호출 대상 필터링
     llm_target_clauses: list[Clause] = []
+    pre_safe_count = 0
+    pre_high_count = 0
     for clause in clauses:
         is_safe, reason = check_safe_rule(clause, contract_type)
         if is_safe:
             all_parsed.append(_rule_safe_result(clause, reason))
             per_clause_refs[clause.index] = []
+            pre_safe_count += 1
             logger.info(f"조항 {clause.index} 사전 safe 룰 매칭: {reason}")
-        else:
-            llm_target_clauses.append(clause)
+            continue
+        is_high, risk_type, high_reason = check_high_rule(clause, contract_type)
+        if is_high:
+            all_parsed.append(_rule_high_result(clause, risk_type, high_reason))
+            per_clause_refs[clause.index] = []
+            pre_high_count += 1
+            logger.info(f"조항 {clause.index} 사전 high 룰 매칭: {risk_type} ({high_reason})")
+            continue
+        llm_target_clauses.append(clause)
 
     logger.info(
-        f"사전 필터: {len(clauses) - len(llm_target_clauses)}개 safe 확정, "
+        f"사전 필터: safe {pre_safe_count}개 / high {pre_high_count}개 확정, "
         f"{len(llm_target_clauses)}개 LLM 분석"
     )
 
     # 2단계: 남은 조항만 LLM 호출
-    tasks = [_analyze_single_clause(c, contract_type) for c in llm_target_clauses]
+    tasks = [_analyze_single_clause(c, contract_type, parties) for c in llm_target_clauses]
     responses = await asyncio.gather(*tasks, return_exceptions=True)
 
     for i, resp in enumerate(responses):
         clause = llm_target_clauses[i]
         if isinstance(resp, Exception):
+            # 무음 폴백 방지: 예외도 명시적 스텁으로 남긴다
             logger.error(f"조항 {clause.index} 분석 실패: {resp}")
+            all_parsed.append({
+                "clause_index": clause.index,
+                "risk_level": "medium",
+                "confidence": 0.3,
+                "risks": [],
+                "explanation": f"[분석 오류] LLM 호출 중 오류가 발생했습니다: {type(resp).__name__}. 수동 검토가 필요합니다.",
+                "_status": "llm_error",
+            })
+            per_clause_refs[clause.index] = []
             continue
 
-        _, text, refs = resp
+        _, text, refs, status_hint = resp
         per_clause_refs[clause.index] = refs
 
         parsed = _extract_json_from_response(text)
 
         if not parsed:
             logger.warning(f"조항 {clause.index} 파싱 실패. LLM 원문:\n{text[:500]}")
+            # 파싱 실패 시 룰 레이어로 폴백 (사전 필터에서 매칭되지 않은 조항이지만,
+            # 패턴이 추가되거나 정규화 차이로 사후에 매칭될 수 있음)
+            is_high_fb, risk_type_fb, reason_fb = check_high_rule(clause, contract_type)
+            if is_high_fb:
+                all_parsed.append(_rule_high_result(clause, risk_type_fb, reason_fb))
+                logger.info(f"조항 {clause.index} 파싱 실패 → high 룰 폴백: {risk_type_fb}")
+                continue
+            is_safe_fb, safe_reason_fb = check_safe_rule(clause, contract_type)
+            if is_safe_fb:
+                all_parsed.append(_rule_safe_result(clause, safe_reason_fb))
+                logger.info(f"조항 {clause.index} 파싱 실패 → safe 룰 폴백: {safe_reason_fb}")
+                continue
+            # 룰 폴백도 실패 → 파싱 실패 상태를 명시적으로 남긴다 (드롭 금지)
+            status_label = status_hint if status_hint != "ok" else "parse_failed"
+            # 원문 덤프 — 원인 분석용
+            dump_path = _dump_parse_failure(clause.index, status_label, text)
+            if dump_path:
+                logger.warning(f"조항 {clause.index} 원문 덤프: {dump_path}")
+            explanation_map = {
+                "timeout": "[분석 실패] LLM 응답 타임아웃. 수동 검토가 필요합니다.",
+                "empty": "[분석 실패] LLM이 빈 응답을 반환했습니다. 수동 검토가 필요합니다.",
+                "parse_failed": "[분석 실패] LLM 응답을 JSON으로 해석할 수 없습니다. 수동 검토가 필요합니다.",
+            }
+            all_parsed.append({
+                "clause_index": clause.index,
+                "risk_level": "medium",
+                "confidence": 0.3,
+                "risks": [],
+                "explanation": explanation_map.get(status_label, explanation_map["parse_failed"]),
+                "_status": status_label,
+            })
             continue
 
         result = parsed[0]

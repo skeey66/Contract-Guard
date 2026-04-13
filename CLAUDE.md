@@ -51,8 +51,8 @@ python -m backend.scripts.validate
 ## 지식베이스(KB) 빌드 주의사항
 
 - **AI Hub 원천 데이터 위치**: `backend/data/raw/aihub/` (프로젝트 루트의 `data/raw/`가 아님). `build_kb.py`는 경로가 존재하지 않으면 `[INFO] 데이터 디렉토리가 없습니다`만 찍고 내장 데이터만 인덱싱하므로 **silent fail**에 주의할 것.
-- **ChromaDB persist 경로**: `.env`의 `CHROMA_PERSIST_DIR`로 결정되며 기본값은 `data/chroma`가 아닐 수 있다. 현재 환경은 `C:/temp/contract-guard-chroma`. BM25 pkl/json은 `data/bm25/`에 저장.
-- **재빌드 시 중복 삽입 버그**: `build_kb.py:104`에서 aihub 항목을 `str(uuid.uuid4())`로 매번 새로 발급하기 때문에, ChromaDB를 비우지 않고 `--data-dir` 옵션으로 재빌드하면 **텍스트가 동일한 문서가 2배로 쌓인다**. 내장 데이터는 고정 ID라 idempotent. 재빌드 전에는 반드시 `CHROMA_PERSIST_DIR`로 지정된 디렉토리를 먼저 삭제할 것.
+- **ChromaDB persist 경로**: 기본값은 `config.py`의 `DATA_DIR / "chroma"` → 프로젝트 루트의 `data/chroma/`. `.env`의 `CHROMA_PERSIST_DIR`로 오버라이드 가능하지만, 배포 이식성을 위해 기본값(프로젝트 내 상대 경로)을 사용할 것. BM25 pkl/json은 `data/bm25/`에 저장.
+- **재빌드 시 중복 삽입 버그**: `build_kb.py:104`에서 aihub 항목을 `str(uuid.uuid4())`로 매번 새로 발급하기 때문에, ChromaDB를 비우지 않고 `--data-dir` 옵션으로 재빌드하면 **텍스트가 동일한 문서가 2배로 쌓인다**. 내장 데이터는 고정 ID라 idempotent. 재빌드 전에는 반드시 `data/chroma/` 디렉토리를 먼저 삭제할 것.
 - **KB 빌드 결과 (참고)**: 정상 빌드 시 lease 1,648 / sales 1,814 / employment 12 (= 3,474). employment은 AI Hub 약관 데이터셋에 근로계약 카테고리 자체가 없어 내장 12건뿐이다.
 - **파싱 로직**: `_load_clause_data()`는 파일명에 `임대차`/`매매계약` 키워드가 포함된 JSON만, `_load_judgment_data()`는 경로에 `민사`가 포함된 판결문 중 `LEASE_KEYWORDS`/`SALES_KEYWORDS`로 분류. employment은 두 파서 모두 대상에서 제외된다.
 

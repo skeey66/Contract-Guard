@@ -15,8 +15,13 @@ async def run_analysis(
     filename: str,
     clauses: list[Clause],
     contract_type: str = "lease",
+    parties: dict[str, str] | None = None,
 ) -> AnalysisResult:
-    result = await analyze_all_clauses(clauses, contract_type=contract_type)
+    result = await analyze_all_clauses(
+        clauses,
+        contract_type=contract_type,
+        parties=parties,
+    )
     parsed_list = result["parsed_list"]
     per_clause_refs = result["per_clause_refs"]
 
@@ -92,11 +97,14 @@ def _build_clause_analyses(
                 if isinstance(r, dict)
             ]
             explanation = parsed.get("explanation", "")
+            analysis_status = parsed.get("_status", "ok")
         else:
+            # index_map에도 없음 = chain이 완전히 누락한 조항 (이상 케이스)
             risk_level = RiskLevel.MEDIUM
             confidence = 0.3
             risks = []
-            explanation = "이 조항은 분석 과정에서 파싱에 실패하여 자동으로 중위험(medium)으로 분류되었습니다. 실제 위험 여부는 직접 검토가 필요합니다."
+            explanation = "[분석 실패] 분석 파이프라인에서 이 조항이 누락되었습니다. 수동 검토가 필요합니다."
+            analysis_status = "missing"
 
         # 해당 조항 전용 참고문헌 사용
         clause_refs = per_clause_refs.get(clause.index, [])
@@ -114,6 +122,7 @@ def _build_clause_analyses(
             risks=risks,
             similar_references=similar_refs,
             explanation=explanation,
+            analysis_status=analysis_status,
         ))
 
     return analyses

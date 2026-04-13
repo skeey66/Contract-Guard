@@ -16,6 +16,48 @@ def detect_contract_type(text: str) -> str:
     return max(scores, key=scores.get)
 
 
+# 계약 유형별 표준 갑/을 매핑 (대다수 한국 계약서의 관례)
+_DEFAULT_PARTIES = {
+    "lease": {"갑": "임대인", "을": "임차인"},
+    "sales": {"갑": "매도인", "을": "매수인"},
+    "employment": {"갑": "사용자", "을": "근로자"},
+}
+
+# 계약 유형별 후보 역할명 (갑/을 주변에 출현할 수 있는 한국어 단어)
+_ROLE_CANDIDATES = {
+    "lease": ["임대인", "임차인"],
+    "sales": ["매도인", "매수인"],
+    "employment": ["사용자", "근로자", "고용주", "사업주"],
+}
+
+_ROLE_NORMALIZE = {
+    "고용주": "사용자",
+    "사업주": "사용자",
+}
+
+
+def detect_parties(text: str, contract_type: str) -> dict[str, str]:
+    """계약서 헤더/말미에서 '임대인(갑)' 같은 패턴을 찾아 갑/을 역할을 추출.
+
+    감지 실패 시 해당 계약 유형의 표준 관례를 반환한다.
+    """
+    result = dict(_DEFAULT_PARTIES.get(contract_type, {"갑": "갑", "을": "을"}))
+    candidates = _ROLE_CANDIDATES.get(contract_type, [])
+    if not candidates:
+        return result
+
+    # "{역할}(갑)" 또는 "갑({역할})" 양쪽 형태를 모두 매칭
+    role_group = "|".join(candidates)
+    for sym in ("갑", "을"):
+        pattern1 = rf"({role_group})\s*\(\s*{sym}\s*\)"
+        pattern2 = rf"{sym}\s*\(\s*({role_group})\s*\)"
+        m = re.search(pattern1, text) or re.search(pattern2, text)
+        if m:
+            raw = m.group(1)
+            result[sym] = _ROLE_NORMALIZE.get(raw, raw)
+    return result
+
+
 def split_clauses(text: str) -> list[Clause]:
     """계약서 텍스트를 조항 단위로 분리한다."""
     # 조항 헤더만 매칭: "제N조" 또는 "제N조 (제목)"

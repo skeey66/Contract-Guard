@@ -11,6 +11,9 @@ class ClauseAnalysis(BaseModel):
     risks: list[RiskDetail]
     similar_references: list[str] = []
     explanation: str = ""
+    # 분석 상태: "ok" | "parse_failed" | "llm_error" | "timeout"
+    # 무음 폴백을 가시화하기 위한 필드 — medium은 진짜 중위험과 구분이 안 되므로 상태로 노출
+    analysis_status: str = "ok"
 
 
 class AnalysisResult(BaseModel):

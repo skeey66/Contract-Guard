@@ -32,6 +32,7 @@ async def upload_and_analyze(
         raise HTTPException(status_code=422, detail="문서에서 텍스트를 추출할 수 없습니다.")
 
     contract_type = clause_service.detect_contract_type(text)
+    parties = clause_service.detect_parties(text, contract_type)
 
     clauses = clause_service.split_clauses(text)
     if not clauses:
@@ -42,6 +43,7 @@ async def upload_and_analyze(
         filename=file.filename,
         clauses=clauses,
         contract_type=contract_type,
+        parties=parties,
     )
 
     return AnalysisResponse(status="completed", result=result)

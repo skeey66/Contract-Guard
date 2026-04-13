@@ -15,10 +15,49 @@ _bm25_indices: dict[str, BM25Okapi] = {}
 _bm25_docs: dict[str, list[dict]] = {}
 
 
+# 긴 접미사부터 매칭하기 위해 길이 내림차순
+_KO_PARTICLES = sorted(
+    [
+        "으로서", "으로써", "에게서", "에서는", "에서도", "까지는",
+        "로서", "로써", "에게", "한테", "까지", "부터", "이나", "에서",
+        "으로", "이다", "한다", "된다", "했다", "하다", "되다", "이며",
+        "으며", "처럼", "보다", "마저", "라도", "에도",
+        "은", "는", "이", "가", "을", "를", "의", "에", "도", "만",
+        "과", "와", "나", "로", "며",
+    ],
+    key=len,
+    reverse=True,
+)
+
+
+def _strip_particle(tok: str) -> str:
+    # 조사/어미를 제거하여 어간 후보를 얻음. 어간이 너무 짧아지면 원본 유지.
+    for p in _KO_PARTICLES:
+        if len(tok) > len(p) + 1 and tok.endswith(p):
+            return tok[: -len(p)]
+    return tok
+
+
 def _tokenize(text: str) -> list[str]:
-    """한국어 텍스트를 토큰화. 공백 + 특수문자 기준 분리 후 1글자 이하 제거."""
-    tokens = re.findall(r"[가-힣a-zA-Z0-9]+", text)
-    return [t for t in tokens if len(t) > 1]
+    """한국어 텍스트를 토큰화.
+
+    원본 토큰과 조사 제거 후 어간을 모두 포함하여 BM25 recall을 향상시킨다.
+    (예: "근로자는" → ["근로자는", "근로자"])
+    """
+    raw_tokens = re.findall(r"[가-힣a-zA-Z0-9]+", text)
+    out = []
+    seen = set()
+    for t in raw_tokens:
+        if len(t) <= 1:
+            continue
+        if t not in seen:
+            out.append(t)
+            seen.add(t)
+        stripped = _strip_particle(t)
+        if stripped != t and len(stripped) > 1 and stripped not in seen:
+            out.append(stripped)
+            seen.add(stripped)
+    return out
 
 
 def _index_path(contract_type: str) -> Path:
