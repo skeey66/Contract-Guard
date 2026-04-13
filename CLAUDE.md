@@ -29,9 +29,9 @@ source .venv/bin/activate && uvicorn backend.app.main:app --reload --port 8000
 # 프론트엔드 단독
 cd frontend && npm run dev
 
-# 지식베이스 구축
-python -m backend.scripts.build_kb                            # 내장 법률 데이터만
-python -m backend.scripts.build_kb --data-dir data/raw/aihub  # AI Hub 데이터 포함
+# 지식베이스 구축 (프로젝트 루트에서 실행)
+python -m backend.scripts.build_kb                                    # 내장 법률 데이터만 (약 43건)
+python -m backend.scripts.build_kb --data-dir backend/data/raw/aihub  # AI Hub 포함 (약 3,474건)
 
 # 정확도 검증 (프롬프트 수정 후 반드시 실행)
 python -m backend.scripts.validate
@@ -47,6 +47,14 @@ python -m backend.scripts.validate
 3. `CONTRACT_TYPES` 딕셔너리의 `risk_types` 필드
 
 위험 유형을 추가/변경/삭제할 때 세 곳을 모두 수정하지 않으면 LLM 출력과 시스템 정의가 불일치한다. 현재 LLM 반환값에 대한 risk_type 검증은 없으므로, 프롬프트에 적힌 이름이 사실상 유일한 제약이다.
+
+## 지식베이스(KB) 빌드 주의사항
+
+- **AI Hub 원천 데이터 위치**: `backend/data/raw/aihub/` (프로젝트 루트의 `data/raw/`가 아님). `build_kb.py`는 경로가 존재하지 않으면 `[INFO] 데이터 디렉토리가 없습니다`만 찍고 내장 데이터만 인덱싱하므로 **silent fail**에 주의할 것.
+- **ChromaDB persist 경로**: `.env`의 `CHROMA_PERSIST_DIR`로 결정되며 기본값은 `data/chroma`가 아닐 수 있다. 현재 환경은 `C:/temp/contract-guard-chroma`. BM25 pkl/json은 `data/bm25/`에 저장.
+- **재빌드 시 중복 삽입 버그**: `build_kb.py:104`에서 aihub 항목을 `str(uuid.uuid4())`로 매번 새로 발급하기 때문에, ChromaDB를 비우지 않고 `--data-dir` 옵션으로 재빌드하면 **텍스트가 동일한 문서가 2배로 쌓인다**. 내장 데이터는 고정 ID라 idempotent. 재빌드 전에는 반드시 `CHROMA_PERSIST_DIR`로 지정된 디렉토리를 먼저 삭제할 것.
+- **KB 빌드 결과 (참고)**: 정상 빌드 시 lease 1,648 / sales 1,814 / employment 12 (= 3,474). employment은 AI Hub 약관 데이터셋에 근로계약 카테고리 자체가 없어 내장 12건뿐이다.
+- **파싱 로직**: `_load_clause_data()`는 파일명에 `임대차`/`매매계약` 키워드가 포함된 JSON만, `_load_judgment_data()`는 경로에 `민사`가 포함된 판결문 중 `LEASE_KEYWORDS`/`SALES_KEYWORDS`로 분류. employment은 두 파서 모두 대상에서 제외된다.
 
 ## 계약 유형 추가 시 필요한 작업
 
