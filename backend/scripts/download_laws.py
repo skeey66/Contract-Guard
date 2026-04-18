@@ -27,14 +27,30 @@ LAW_TO_CONTRACT_TYPES: dict[str, list[str]] = {
     "최저임금법": ["employment"],
     "기간제및단시간근로자보호등에관한법률": ["employment"],
     "남녀고용평등과일ㆍ가정양립지원에관한법률": ["employment"],
+    # 약관규제법: 모든 계약에 공통 적용 (불공정 약관 무효 판단의 일반 근거)
+    "약관의규제에관한법률": ["lease", "sales", "employment"],
+    # 민사집행법: 보증금 회수·강제집행 관련 (임대차에서 가장 빈번)
+    "민사집행법": ["lease"],
+}
+
+# 법률별로 다운로드할 파일 목록.
+# 본법(법률.md) 외에 구체 수치(예: 5% 증액 한도)가 시행령에 위임되어 있는 경우가 많으므로
+# 시행령도 함께 받아 grounding 정확도를 높인다.
+DEFAULT_FILES: list[str] = ["법률.md", "시행령.md"]
+LAW_TO_FILES: dict[str, list[str]] = {
+    # 근로기준법은 시행규칙까지 함께 (휴게·연장근로 산정 등 세칙)
+    "근로기준법": ["법률.md", "시행령.md", "시행규칙.md"],
 }
 
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/legalize-kr/legalize-kr/main/kr"
-TARGET_FILE = "법률.md"  # 시행령/시행규칙은 일단 제외 (본법 조문이 grounding 핵심)
 
 
-def _build_url(law_name: str) -> str:
-    return f"{GITHUB_RAW_BASE}/{urllib.parse.quote(law_name)}/{urllib.parse.quote(TARGET_FILE)}"
+def _files_for(law_name: str) -> list[str]:
+    return LAW_TO_FILES.get(law_name, DEFAULT_FILES)
+
+
+def _build_url(law_name: str, filename: str) -> str:
+    return f"{GITHUB_RAW_BASE}/{urllib.parse.quote(law_name)}/{urllib.parse.quote(filename)}"
 
 
 def _download_file(url: str, dest: Path, timeout: int = 30) -> int:
@@ -53,21 +69,23 @@ def download_all(force: bool = False) -> None:
 
     success, skipped, failed = 0, 0, 0
     for law_name, contract_types in LAW_TO_CONTRACT_TYPES.items():
-        dest = laws_dir / law_name / TARGET_FILE
-        if dest.exists() and not force:
-            print(f"  [SKIP] {law_name} (이미 존재, --force로 덮어쓰기)")
-            skipped += 1
-            continue
+        ct_label = ",".join(contract_types)
+        for filename in _files_for(law_name):
+            dest = laws_dir / law_name / filename
+            if dest.exists() and not force:
+                print(f"  [SKIP] {law_name}/{filename} (이미 존재, --force로 덮어쓰기)")
+                skipped += 1
+                continue
 
-        url = _build_url(law_name)
-        try:
-            size = _download_file(url, dest)
-            ct_label = ",".join(contract_types)
-            print(f"  [OK]   {law_name} ({size:,} bytes, contract_type={ct_label})")
-            success += 1
-        except Exception as e:
-            print(f"  [FAIL] {law_name}: {e}")
-            failed += 1
+            url = _build_url(law_name, filename)
+            try:
+                size = _download_file(url, dest)
+                print(f"  [OK]   {law_name}/{filename} ({size:,} bytes, contract_type={ct_label})")
+                success += 1
+            except Exception as e:
+                # 일부 법률은 시행규칙이 없을 수 있음 (404). 경고만 출력하고 계속.
+                print(f"  [FAIL] {law_name}/{filename}: {e}")
+                failed += 1
 
     print(f"\n완료: 성공 {success}, 스킵 {skipped}, 실패 {failed}")
     if success or skipped:

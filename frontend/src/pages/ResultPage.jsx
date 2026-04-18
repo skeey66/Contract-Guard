@@ -1,6 +1,52 @@
 import { useState, useRef, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import RiskBadge from "../components/RiskBadge";
+import { buildExportUrl } from "../api/client";
+
+const EXPORT_FORMATS = [
+  { key: "docx", label: "DOCX", desc: "MS Word" },
+  { key: "pdf", label: "PDF", desc: "인쇄용" },
+  { key: "hwpx", label: "HWPX", desc: "한글" },
+];
+
+function ExportPanel({ analysisId }) {
+  if (!analysisId) return null;
+  const handleDownload = (fmt) => {
+    const url = buildExportUrl(analysisId, fmt);
+    // 새 창 대신 임시 a 요소로 다운로드 트리거
+    const a = document.createElement("a");
+    a.href = url;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+  return (
+    <div className="export-panel">
+      <div className="export-panel-label">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        권고 수정안 반영 계약서 다운로드
+      </div>
+      <div className="export-panel-buttons">
+        {EXPORT_FORMATS.map((f) => (
+          <button
+            key={f.key}
+            type="button"
+            className="export-btn"
+            onClick={() => handleDownload(f.key)}
+          >
+            <span className="export-btn-fmt">{f.label}</span>
+            <span className="export-btn-desc">{f.desc}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function SummaryBar({ result }) {
   const counts = { high: 0, medium: 0, low: 0, safe: 0 };
@@ -80,6 +126,25 @@ function ReferencePanel({ analysis }) {
               분석 요약
             </h3>
             <p className="ref-explanation">{analysis.explanation}</p>
+          </section>
+        )}
+
+        {/* 권고 수정안 */}
+        {analysis.suggested_rewrite && (
+          <section className="ref-section">
+            <h3 className="ref-section-label ref-label-rewrite">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+              </svg>
+              권고 수정안
+            </h3>
+            <div className="ref-rewrite">
+              <pre className="ref-rewrite-text">{analysis.suggested_rewrite}</pre>
+              <p className="ref-rewrite-note">
+                표준약관·관련 법률을 근거로 한 AI 생성 수정안입니다. 실제 적용 전 검토가 필요합니다.
+              </p>
+            </div>
           </section>
         )}
 
@@ -209,6 +274,8 @@ export default function ResultPage() {
       <SummaryBar result={result} />
 
       {result.summary && <p className="result-summary-text">{result.summary}</p>}
+
+      <ExportPanel analysisId={result.id} />
 
       <div className="doc-split-layout">
         {/* 왼쪽: 계약서 원본 문서 뷰어 */}

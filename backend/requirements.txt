@@ -12,3 +12,4 @@ sentence-transformers
 langchain-chroma
 hwp2yaml
 rank-bm25
+reportlab

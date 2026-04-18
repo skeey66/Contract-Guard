@@ -17,15 +17,27 @@ def get_no_reference_context(contract_type: str = "lease") -> str:
     return config["no_reference_context"]
 
 
+_REFERENCE_LABEL_GUIDE = (
+    "## 참고 자료 라벨 안내 (반드시 숙지)\n"
+    "- [법률] : 법률 본문 — 가장 강한 근거. 조문 번호·수치 인용 시 이 라벨의 내용만 사용\n"
+    "- [판결문]: 법원 판결 사례 — 유사 사실관계의 판단 참고\n"
+    "- [약관-불리]: 을(약자측: 임차인/근로자/매수인)에게 **불리한** 약관 사례 — 본 계약 조항이 이와 유사하면 **안전 신호가 아니라 위험 신호**\n"
+    "- [약관-유리]: 을(약자측)에게 유리한 약관 사례\n"
+)
+
+
 def format_references(references: list[dict]) -> str:
-    """참고 법률/판례를 프롬프트용 텍스트로 변환."""
+    """참고 법률/판례를 프롬프트용 텍스트로 변환.
+
+    라벨 의미를 prepend하여 LLM이 [약관-불리] 등을 정반대로 해석하지 않도록 한다.
+    """
     if not references:
         return ""
     ref_lines = []
-    for i, ref in enumerate(references, 1):
+    for i, ref in enumerate(references[:5], 1):
         text = ref.get("text", "")[:300]
         ref_lines.append(f"[참고{i}] {text}")
-    return "\n".join(ref_lines[:5])
+    return _REFERENCE_LABEL_GUIDE + "\n" + "\n".join(ref_lines)
 
 
 def format_parties(parties: dict[str, str] | None) -> str:

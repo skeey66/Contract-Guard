@@ -1,7 +1,44 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import FileUploader from "../components/FileUploader";
-import { uploadDocument } from "../api/client";
+import { uploadDocument, fetchKbStatus } from "../api/client";
+
+// target 값까지 0에서 ease-out으로 카운트업 애니메이션. requestAnimationFrame 기반.
+function useCountUp(target, durationMs = 1600) {
+  const [value, setValue] = useState(0);
+  useEffect(() => {
+    if (!target || target <= 0) {
+      setValue(0);
+      return undefined;
+    }
+    let raf = 0;
+    const start = performance.now();
+    const tick = (now) => {
+      const t = Math.min((now - start) / durationMs, 1);
+      // ease-out cubic — 빠르게 시작했다가 자연스럽게 감속
+      const eased = 1 - Math.pow(1 - t, 3);
+      setValue(Math.round(target * eased));
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, durationMs]);
+  return value;
+}
+
+function StatCard({ icon, label, value, accent }) {
+  const display = useCountUp(value);
+  return (
+    <div className={`stat-card stat-${accent}`}>
+      <div className="stat-icon-wrap">{icon}</div>
+      <div className="stat-number">
+        {display.toLocaleString()}
+        <span className="stat-suffix">건</span>
+      </div>
+      <div className="stat-label">{label}</div>
+    </div>
+  );
+}
 
 function Shield3D() {
   return (
@@ -81,7 +118,19 @@ export default function UploadPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState("");
+  const [kbStats, setKbStats] = useState({ total: 0, laws: 0, judgments: 0, clauses: 0 });
   const navigate = useNavigate();
+
+  // KB 통계 1회 fetch — 실패해도 카드는 0으로 표시되어 페이지가 망가지지는 않음
+  useEffect(() => {
+    fetchKbStatus()
+      .then((data) => {
+        if (data?.categories) setKbStats(data.categories);
+      })
+      .catch(() => {
+        // 백엔드 미기동 시에도 홈은 정상 렌더되도록 무시
+      });
+  }, []);
 
   async function handleFileSelect(file) {
     setLoading(true);
@@ -163,6 +212,72 @@ export default function UploadPage() {
                 <span>{error}</span>
               </div>
             )}
+          </div>
+        </div>
+      </section>
+
+      {/* 데이터 통계 (카운트업 애니메이션) */}
+      <section className="stats-section fade-up">
+        <div className="stats-inner">
+          <h2 className="stats-headline">
+            <span className="stats-headline-accent">{kbStats.total.toLocaleString()}</span>건의
+            법률 데이터로 분석합니다
+          </h2>
+          <p className="stats-sub">
+            법률 조문, 법원 판결문, 표준약관을 통합한 지식베이스가 모든 분석의 근거가 됩니다.
+          </p>
+          <div className="stats-grid">
+            <StatCard
+              accent="total"
+              label="전체 지식베이스"
+              value={kbStats.total}
+              icon={
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <ellipse cx="12" cy="5" rx="9" ry="3" />
+                  <path d="M3 5v6c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+                  <path d="M3 11v6c0 1.66 4 3 9 3s9-1.34 9-3v-6" />
+                </svg>
+              }
+            />
+            <StatCard
+              accent="laws"
+              label="법률·시행령 조문"
+              value={kbStats.laws}
+              icon={
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M3 6l9-4 9 4" />
+                  <path d="M5 10v8m14-8v8M3 22h18" />
+                  <path d="M9 10v8m6-8v8" />
+                </svg>
+              }
+            />
+            <StatCard
+              accent="judgments"
+              label="법원 판결문"
+              value={kbStats.judgments}
+              icon={
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M12 3v18" />
+                  <path d="M5 8l-3 6h6z" />
+                  <path d="M19 8l-3 6h6z" />
+                  <path d="M5 8a4 4 0 0 1 7 0 4 4 0 0 1 7 0" />
+                  <path d="M8 21h8" />
+                </svg>
+              }
+            />
+            <StatCard
+              accent="clauses"
+              label="표준약관 조항"
+              value={kbStats.clauses}
+              icon={
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                  <line x1="8" y1="13" x2="16" y2="13" />
+                  <line x1="8" y1="17" x2="14" y2="17" />
+                </svg>
+              }
+            />
           </div>
         </div>
       </section>
@@ -281,66 +396,6 @@ export default function UploadPage() {
               <h4>AI 위험 분석</h4>
               <p>검색된 법률 근거를 바탕으로 위험 조항을 4단계로 분류하고 개선안을 제시합니다</p>
             </div>
-          </div>
-        </div>
-      </section>
-
-      {/* 기술 스택 */}
-      <section className="tech-section">
-        <h2 className="section-title fade-up">
-          <span className="section-title-line" />
-          기술 스택
-          <span className="section-title-line" />
-        </h2>
-        <div className="tech-grid fade-up">
-          <div className="tech-item">
-            <div className="tech-icon-wrap">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M12 2a4 4 0 014 4c0 1.95-2 4-4 6-2-2-4-4.05-4-6a4 4 0 014-4z" />
-                <path d="M12 12c2 2 4 4.05 4 6a4 4 0 01-8 0c0-1.95 2-4 4-6z" />
-                <circle cx="12" cy="12" r="2" />
-              </svg>
-            </div>
-            <span className="tech-label">Qwen3 8B</span>
-            <span className="tech-desc">로컬 LLM 추론</span>
-          </div>
-          <div className="tech-divider" />
-          <div className="tech-item">
-            <div className="tech-icon-wrap">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <circle cx="12" cy="12" r="3" />
-                <circle cx="12" cy="12" r="8" strokeDasharray="3 3" />
-                <line x1="12" y1="1" x2="12" y2="4" />
-                <line x1="12" y1="20" x2="12" y2="23" />
-                <line x1="1" y1="12" x2="4" y2="12" />
-                <line x1="20" y1="12" x2="23" y2="12" />
-              </svg>
-            </div>
-            <span className="tech-label">ChromaDB</span>
-            <span className="tech-desc">벡터 유사도 검색</span>
-          </div>
-          <div className="tech-divider" />
-          <div className="tech-item">
-            <div className="tech-icon-wrap">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" />
-                <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" />
-              </svg>
-            </div>
-            <span className="tech-label">BM25 + RRF</span>
-            <span className="tech-desc">하이브리드 검색</span>
-          </div>
-          <div className="tech-divider" />
-          <div className="tech-item">
-            <div className="tech-icon-wrap">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <polyline points="16 18 22 12 16 6" />
-                <polyline points="8 6 2 12 8 18" />
-                <line x1="14" y1="4" x2="10" y2="20" />
-              </svg>
-            </div>
-            <span className="tech-label">FastAPI + React</span>
-            <span className="tech-desc">풀스택 아키텍처</span>
           </div>
         </div>
       </section>

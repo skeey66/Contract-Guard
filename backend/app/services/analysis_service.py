@@ -1,11 +1,16 @@
+import json
 import logging
 import uuid
 from difflib import SequenceMatcher
+from pathlib import Path
+
+from backend.app.config import settings
 from backend.app.models.clause import Clause
 from backend.app.models.risk import RiskLevel, RiskDetail
 from backend.app.models.analysis import ClauseAnalysis, AnalysisResult
 from backend.app.rag.chain import analyze_all_clauses
 from backend.app.contract_types import CONTRACT_TYPES
+from backend.app.services.rewrite_service import rewrite_risky_clauses
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +30,21 @@ async def run_analysis(
     parsed_list = result["parsed_list"]
     per_clause_refs = result["per_clause_refs"]
 
-    clause_analyses = _build_clause_analyses(parsed_list, clauses, per_clause_refs, contract_type)
+    # 위험도 high/medium 조항에 대해 표준약관 기반 수정안 생성
+    rewrites: dict[int, str] = {}
+    try:
+        rewrites = await rewrite_risky_clauses(clauses, parsed_list, per_clause_refs)
+    except Exception as e:
+        logger.error(f"수정안 생성 단계 실패 (분석 결과는 정상 반환): {e}")
+
+    clause_analyses = _build_clause_analyses(
+        parsed_list, clauses, per_clause_refs, contract_type, rewrites
+    )
 
     risky = [ca for ca in clause_analyses if ca.risk_level != RiskLevel.SAFE]
     summary = _generate_summary(clause_analyses, risky)
 
-    return AnalysisResult(
+    analysis_result = AnalysisResult(
         id=str(uuid.uuid4()),
         document_id=document_id,
         filename=filename,
@@ -39,6 +53,21 @@ async def run_analysis(
         clause_analyses=clause_analyses,
         summary=summary,
     )
+
+    # 분석 결과를 디스크에 영속화 — export/재조회 엔드포인트가 사용
+    try:
+        results_dir = Path(settings.results_dir)
+        results_dir.mkdir(parents=True, exist_ok=True)
+        out_path = results_dir / f"{analysis_result.id}.json"
+        out_path.write_text(
+            analysis_result.model_dump_json(indent=2, exclude_none=False),
+            encoding="utf-8",
+        )
+        logger.info(f"분석 결과 저장: {out_path}")
+    except Exception as e:
+        logger.error(f"분석 결과 저장 실패 (응답은 정상 반환): {e}")
+
+    return analysis_result
 
 
 def _normalize_risk_type(raw: str, valid_types: list[str]) -> str:
@@ -67,6 +96,7 @@ def _build_clause_analyses(
     clauses: list[Clause],
     per_clause_refs: dict[int, list[dict]],
     contract_type: str = "lease",
+    rewrites: dict[int, str] | None = None,
 ) -> list[ClauseAnalysis]:
     # 계약 유형별 유효한 risk_type 목록
     ct_config = CONTRACT_TYPES.get(contract_type, {})
@@ -113,6 +143,8 @@ def _build_clause_analyses(
             for ref in clause_refs
         ]
 
+        suggested_rewrite = (rewrites or {}).get(clause.index)
+
         analyses.append(ClauseAnalysis(
             clause_index=clause.index,
             clause_title=clause.title,
@@ -123,6 +155,7 @@ def _build_clause_analyses(
             similar_references=similar_refs,
             explanation=explanation,
             analysis_status=analysis_status,
+            suggested_rewrite=suggested_rewrite,
         ))
 
     return analyses

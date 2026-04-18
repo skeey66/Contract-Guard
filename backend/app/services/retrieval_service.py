@@ -9,6 +9,11 @@ logger = logging.getLogger(__name__)
 # RRF 상수 (k가 클수록 하위 순위 문서의 영향력 증가)
 RRF_K = 60
 
+# 법률 본문(source="law")은 grounding의 가장 강한 근거이므로 RRF 점수 부스트.
+# 약관·판결문이 압도적으로 많아(약 4400건 vs 법률 509건) 단순 RRF로는 top-5에
+# 거의 못 들어와서, 법률 조문이 검색 결과에 항상 한두 건은 노출되도록 보정한다.
+LAW_BOOST = 1.5
+
 
 def _rrf_combine(
     vector_results: list[tuple[str, dict]],
@@ -32,6 +37,11 @@ def _rrf_combine(
         scores[doc_id] = scores.get(doc_id, 0) + 1.0 / (RRF_K + rank + 1)
         if doc_id not in entries:
             entries[doc_id] = entry
+
+    # 법률 본문 부스트 (source="law")
+    for doc_id, entry in entries.items():
+        if entry.get("metadata", {}).get("source") == "law":
+            scores[doc_id] *= LAW_BOOST
 
     # RRF 점수 기준 정렬
     ranked_ids = sorted(scores, key=lambda x: scores[x], reverse=True)[:top_k]

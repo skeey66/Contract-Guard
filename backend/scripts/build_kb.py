@@ -273,7 +273,17 @@ LAW_TO_CONTRACT_TYPES: dict[str, list[str]] = {
     "최저임금법": ["employment"],
     "기간제및단시간근로자보호등에관한법률": ["employment"],
     "남녀고용평등과일ㆍ가정양립지원에관한법률": ["employment"],
+    "약관의규제에관한법률": ["lease", "sales", "employment"],
+    "민사집행법": ["lease"],
 }
+
+# 같은 디렉토리에서 인덱싱할 법령 종류 목록.
+# (파일명, law_kind 라벨) — law_kind는 metadata에 들어가 검색 결과 라벨링·디버깅에 사용된다.
+LAW_FILES: list[tuple[str, str]] = [
+    ("법률.md", "법률"),
+    ("시행령.md", "시행령"),
+    ("시행규칙.md", "시행규칙"),
+]
 
 # 민법은 전체가 너무 방대하므로 임대차편/매매편 조문 번호 범위로 라우팅
 # (민법 제2편 채권 - 제3장 매매 563~595, 제7장 임대차 618~654)
@@ -331,7 +341,7 @@ def _parse_law_markdown(md_text: str) -> tuple[dict, list[dict]]:
 
 
 def _load_law_data(laws_dir: Path) -> list[dict]:
-    """backend/data/raw/laws/{법률명}/법률.md 파일들을 조문 단위 document로 변환."""
+    """backend/data/raw/laws/{법률명}/{법률|시행령|시행규칙}.md 를 조문 단위 document로 변환."""
     items: list[dict] = []
     if not laws_dir.exists():
         print(f"[INFO] 법률 디렉토리가 없습니다: {laws_dir} (download_laws.py 실행 필요)")
@@ -344,63 +354,74 @@ def _load_law_data(laws_dir: Path) -> list[dict]:
         if law_name not in LAW_TO_CONTRACT_TYPES:
             print(f"  [SKIP] 매핑 없는 법률: {law_name}")
             continue
-        md_file = law_dir / "법률.md"
-        if not md_file.exists():
-            print(f"  [SKIP] 법률.md 없음: {law_name}")
-            continue
-
-        md_text = md_file.read_text(encoding="utf-8")
-        frontmatter, articles = _parse_law_markdown(md_text)
-        if not articles:
-            print(f"  [WARN] 조문 파싱 실패: {law_name}")
-            continue
-
-        # 폐지 법률은 제외
-        status = str(frontmatter.get("상태", "시행")).strip()
-        if status and status != "시행":
-            print(f"  [SKIP] 비시행 법률: {law_name} (상태={status})")
-            continue
 
         contract_types = LAW_TO_CONTRACT_TYPES[law_name]
-        siheng_date = frontmatter.get("시행일자", "")
 
-        per_law_count = {ct: 0 for ct in contract_types}
-        for art in articles:
-            art_no, sub_no, title, body = art["article_no"], art["sub_no"], art["title"], art["body"].strip()
-            if len(body) < 20:
+        for filename, law_kind in LAW_FILES:
+            md_file = law_dir / filename
+            if not md_file.exists():
+                # 시행규칙이 없는 법령은 정상이므로 INFO만 출력
+                if law_kind == "법률":
+                    print(f"  [SKIP] {filename} 없음: {law_name}")
                 continue
 
-            # contract_type 라우팅: 민법은 조문 번호 범위로 분리, 그 외는 전체 매핑
-            for ct in contract_types:
-                if law_name == "민법":
-                    lo, hi = MINBEOP_RANGES[ct]
-                    if not (lo <= art_no <= hi):
-                        continue
+            md_text = md_file.read_text(encoding="utf-8")
+            frontmatter, articles = _parse_law_markdown(md_text)
+            if not articles:
+                print(f"  [WARN] 조문 파싱 실패: {law_name}/{filename}")
+                continue
 
-                article_label = f"제{art_no}조" + (f"의{sub_no}" if sub_no else "")
-                header = f"[법률] {law_name} {article_label} ({title})"
-                # 본문 정규화: 연속 빈 줄 압축
-                body_norm = re.sub(r"\n{3,}", "\n\n", body)
-                combined = f"{header}\n{body_norm}"[:1500]
+            # 폐지 법령은 제외
+            status = str(frontmatter.get("상태", "시행")).strip()
+            if status and status != "시행":
+                print(f"  [SKIP] 비시행: {law_name}/{filename} (상태={status})")
+                continue
 
-                items.append({
-                    "id": _content_id(f"law-{ct}", combined),
-                    "text": combined,
-                    "metadata": {
-                        "source": "law",
-                        "law_name": law_name,
-                        "article_no": art_no,
-                        "sub_no": sub_no,
-                        "article_title": title,
-                        "contract_type": ct,
-                        "siheng_date": str(siheng_date),
-                    },
-                })
-                per_law_count[ct] += 1
+            siheng_date = frontmatter.get("시행일자", "")
+            # 시행령·시행규칙은 본법 명칭으로 frontmatter title이 들어오는 경우가 있어
+            # 디스플레이용 명칭은 디렉토리명 + law_kind로 통일
+            display_name = f"{law_name} {law_kind}" if law_kind != "법률" else law_name
 
-        for ct, cnt in per_law_count.items():
-            if cnt:
-                print(f"    법률 {ct}: {law_name} → {cnt}개 조문")
+            per_law_count = {ct: 0 for ct in contract_types}
+            for art in articles:
+                art_no = art["article_no"]
+                sub_no = art["sub_no"]
+                title = art["title"]
+                body = art["body"].strip()
+                if len(body) < 20:
+                    continue
+
+                # 민법 본법은 조문 번호 범위로 contract_type 라우팅 (시행령은 범위 미정의 → 전체 매핑)
+                for ct in contract_types:
+                    if law_name == "민법" and law_kind == "법률":
+                        lo, hi = MINBEOP_RANGES[ct]
+                        if not (lo <= art_no <= hi):
+                            continue
+
+                    article_label = f"제{art_no}조" + (f"의{sub_no}" if sub_no else "")
+                    header = f"[{law_kind}] {display_name} {article_label} ({title})"
+                    body_norm = re.sub(r"\n{3,}", "\n\n", body)
+                    combined = f"{header}\n{body_norm}"[:1500]
+
+                    items.append({
+                        "id": _content_id(f"law-{ct}-{law_kind}", combined),
+                        "text": combined,
+                        "metadata": {
+                            "source": "law",
+                            "law_name": law_name,
+                            "law_kind": law_kind,
+                            "article_no": art_no,
+                            "sub_no": sub_no,
+                            "article_title": title,
+                            "contract_type": ct,
+                            "siheng_date": str(siheng_date),
+                        },
+                    })
+                    per_law_count[ct] += 1
+
+            for ct, cnt in per_law_count.items():
+                if cnt:
+                    print(f"    {law_kind} {ct}: {law_name} → {cnt}개 조문")
 
     return items
 

@@ -41,6 +41,56 @@ MAX_RETRIES = 1
 # 개별 조항 LLM 호출 타임아웃 (초)
 PER_CLAUSE_TIMEOUT = 90
 
+# 다중 항(項) 분리용 정규식. ①②③ 또는 "1." / "1)" 형태의 리스트 마커.
+# 한 조항 안에 2개 이상 매칭되면 항별 검색 분할을 적용한다.
+_CIRCLED_NUM_RE = re.compile(r"[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮]")
+_NUMBERED_ITEM_RE = re.compile(r"(?:^|\n)\s*\(?(\d{1,2})[.)]\s+")
+
+
+def _split_clause_into_items(content: str) -> list[str]:
+    """조항 본문을 항(項) 단위로 분리. 분리 불가 시 빈 리스트 반환."""
+    if len(_CIRCLED_NUM_RE.findall(content)) >= 2:
+        parts = _CIRCLED_NUM_RE.split(content)
+        items = [p.strip() for p in parts if p.strip()]
+        return items if len(items) >= 2 else []
+
+    matches = list(_NUMBERED_ITEM_RE.finditer(content))
+    if len(matches) >= 2:
+        items = []
+        for i, m in enumerate(matches):
+            start = m.start()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+            chunk = content[start:end].strip()
+            if chunk:
+                items.append(chunk)
+        return items if len(items) >= 2 else []
+
+    return []
+
+
+def _retrieve_for_clause(clause: Clause, contract_type: str) -> list[dict]:
+    """다중 항 조항이면 항별 검색 후 union, 단일 항이면 기존 방식."""
+    items = _split_clause_into_items(clause.content)
+    if not items:
+        logger.info(
+            f"[retrieve] 조항 {clause.index} 단일항 처리 (content {len(clause.content)}자)"
+        )
+        return retrieve_similar(clause.content, contract_type=contract_type)
+    logger.info(
+        f"[retrieve] 조항 {clause.index} 항 분할 적용: {len(items)}개 항"
+    )
+
+    seen_ids: set[str] = set()
+    merged: list[dict] = []
+    for item in items:
+        for ref in retrieve_similar(item, contract_type=contract_type):
+            ref_id = ref.get("id") or ref.get("text", "")[:80]
+            if ref_id in seen_ids:
+                continue
+            seen_ids.add(ref_id)
+            merged.append(ref)
+    return merged
+
 
 def _strip_thinking(text: str) -> str:
     """thinking 태그를 제거하되, 태그 안에 JSON이 있으면 보존."""
@@ -217,6 +267,7 @@ async def _invoke_llm(llm, messages) -> str:
 _SAFE_EXPLANATIONS = {
     "목적물 식별 기재": "임대 목적물의 소재지와 면적을 특정하는 기본 기재 사항으로, 법적 위험이 없는 조항입니다.",
     "단순 임대 조건 기재": "임대 목적물과 보증금·월차임 금액만을 명시한 단순 사실 기재 조항으로, 임차인에게 위험 요소가 없는 기본 조항입니다.",
+    "보증금·차임 금액 및 지급 일정 기재": "보증금·차임 금액과 계약금·잔금 지급 일정을 명시한 단순 사실 기재 조항으로, 임차인에게 위험 요소가 없습니다.",
     "단순 금액·납부일정 기재": "보증금, 차임 등 금액과 납부 일정을 기재한 조항으로, 특별한 위험 요소가 없습니다.",
     "종료일 보증금 반환": "임대차 종료 시 보증금 반환을 규정한 조항으로, 임차인의 권리를 보장하는 내용입니다.",
     "법정 증액 한도 준수": "주택임대차보호법 제7조에 따른 연 5% 이내 증액 한도를 준수하고 있어 안전합니다.",
@@ -273,7 +324,7 @@ async def _analyze_single_clause(
     반환값 4번째 원소는 상태 힌트: "ok" | "timeout" | "empty" | "parse_failed".
     호출자는 이 힌트로 무음 폴백을 가시화한다.
     """
-    references = retrieve_similar(clause.content, contract_type=contract_type)
+    references = _retrieve_for_clause(clause, contract_type)
 
     ref_text = format_references(references)
     if not ref_text:

@@ -75,3 +75,19 @@ def collection_status() -> dict:
             "name": settings.chroma_collection,
             "count": 0,
         }
+
+
+def count_by_source() -> dict[str, int]:
+    """metadata.source 별 문서 수를 반환. 홈 화면 통계 표시용."""
+    try:
+        client = _get_raw_client()
+        collection = client.get_or_create_collection(settings.chroma_collection)
+        # build_kb.py 에서 사용하는 source 값 (law / aihub_약관 / aihub_판결문 / 내장)
+        sources = ["law", "aihub_약관", "aihub_판결문"]
+        counts: dict[str, int] = {}
+        for src in sources:
+            res = collection.get(where={"source": src}, include=[])
+            counts[src] = len(res.get("ids", []))
+        return counts
+    except Exception:
+        return {}
