@@ -27,4 +27,20 @@ export function buildExportUrl(analysisId, format) {
   return `/api/analyses/${encodeURIComponent(analysisId)}/export?format=${encodeURIComponent(format)}`;
 }
 
+// URL 새로고침/직접 접근 시 결과를 서버에서 복원
+export async function fetchAnalysis(analysisId) {
+  const response = await api.get(`/api/analyses/${encodeURIComponent(analysisId)}`);
+  return response.data;
+}
+
+// 위험 조항에 대해 사용자가 직접 입력한 수정안을 저장(또는 제거)
+// text가 null/공백이면 사용자 수정안을 제거하여 권고안으로 회귀
+export async function updateClauseOverride(analysisId, clauseIndex, text) {
+  const response = await api.patch(
+    `/api/analyses/${encodeURIComponent(analysisId)}/clauses/${clauseIndex}`,
+    { text },
+  );
+  return response.data;
+}
+
 export default api;

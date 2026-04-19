@@ -264,16 +264,32 @@ def _load_judgment_data(data_path: Path) -> list[dict]:
 
 # 법률명 → 매핑할 contract_type 목록 (download_laws.py와 동기화)
 LAW_TO_CONTRACT_TYPES: dict[str, list[str]] = {
+    # 임대차
     "주택임대차보호법": ["lease"],
     "상가건물임대차보호법": ["lease"],
-    "민법": ["lease", "sales"],
+    "민법": ["lease", "sales", "service", "loan"],
+    # 매매·중개
     "공인중개사법": ["sales"],
     "부동산거래신고등에관한법률": ["sales"],
+    # 근로
     "근로기준법": ["employment"],
     "최저임금법": ["employment"],
     "기간제및단시간근로자보호등에관한법률": ["employment"],
     "남녀고용평등과일ㆍ가정양립지원에관한법률": ["employment"],
-    "약관의규제에관한법률": ["lease", "sales", "employment"],
+    "노동조합및노동관계조정법": ["employment"],
+    "근로자퇴직급여보장법": ["employment"],
+    "산업안전보건법": ["employment"],
+    "직업안정법": ["employment"],
+    "파견근로자보호등에관한법률": ["employment"],
+    # 용역/도급 (service)
+    "하도급거래공정화에관한법률": ["service"],
+    "건설산업기본법": ["service"],
+    # 금전소비대차 (loan)
+    "이자제한법": ["loan"],
+    "대부업등의등록및금융이용자보호에관한법률": ["loan"],
+    "보증인보호를위한특별법": ["loan"],
+    # 모든 계약 공통
+    "약관의규제에관한법률": ["lease", "sales", "employment", "service", "loan"],
     "민사집행법": ["lease"],
 }
 
@@ -285,11 +301,16 @@ LAW_FILES: list[tuple[str, str]] = [
     ("시행규칙.md", "시행규칙"),
 ]
 
-# 민법은 전체가 너무 방대하므로 임대차편/매매편 조문 번호 범위로 라우팅
-# (민법 제2편 채권 - 제3장 매매 563~595, 제7장 임대차 618~654)
+# 민법은 전체가 너무 방대하므로 편별 조문 번호 범위로 라우팅
+# - 제3장 매매 563~595 (sales)
+# - 제2장 소비대차 598~608 (loan)
+# - 제7장 임대차 618~654 (lease)
+# - 제9장 도급 664~674 (service)
 MINBEOP_RANGES: dict[str, tuple[int, int]] = {
     "lease": (618, 654),
     "sales": (563, 595),
+    "service": (664, 674),
+    "loan": (598, 608),
 }
 
 ARTICLE_HEADER_RE = re.compile(r"^#####\s+제(\d+)조(?:의(\d+))?\s*\(([^)]*)\)?")
@@ -426,6 +447,138 @@ def _load_law_data(laws_dir: Path) -> list[dict]:
     return items
 
 
+# ============================================================
+# precedent-kr 판례 로더 (legalize-kr/precedent-kr)
+# ============================================================
+# 약 42,000건 민사 판례 + 다른 분야. 키워드 매칭으로 도메인 분류 후 도메인당 N건만 인덱싱.
+
+PRECEDENT_KEYWORDS: dict[str, list[str]] = {
+    "lease": ["임대차", "임차인", "임대인", "보증금", "차임", "전세권"],
+    "sales": ["매매", "매도인", "매수인", "소유권이전", "잔금"],
+    "employment": ["근로기준", "임금", "퇴직금", "부당해고", "근로계약", "통상임금", "연차"],
+    "service": ["도급", "수급인", "공사대금", "하도급", "용역계약", "기성고", "공사도급"],
+    "loan": ["소비대차", "대여금", "차용금", "이자제한", "보증채무", "근보증", "기한이익"],
+}
+
+PRECEDENT_HEADER_RE = re.compile(r"^##\s+(판시사항|판결요지|참조조문|참조판례|판례내용)\s*$", re.MULTILINE)
+
+
+def _parse_precedent_md(md_text: str) -> tuple[dict, dict[str, str]]:
+    """precedent-kr 마크다운에서 frontmatter + 섹션별 본문을 추출."""
+    if not md_text.startswith("---"):
+        return {}, {}
+    parts = md_text.split("---", 2)
+    if len(parts) < 3:
+        return {}, {}
+    try:
+        frontmatter = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        frontmatter = {}
+    body = parts[2]
+
+    # 섹션 헤더 위치를 모두 찾아 인덱스 페어로 split
+    matches = list(PRECEDENT_HEADER_RE.finditer(body))
+    sections: dict[str, str] = {}
+    for i, m in enumerate(matches):
+        name = m.group(1)
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        sections[name] = body[start:end].strip()
+    return frontmatter, sections
+
+
+def _classify_precedent(text: str) -> str | None:
+    """판례 본문에서 가장 점수 높은 도메인을 반환. 모두 0이면 None."""
+    scores: dict[str, int] = {}
+    for ct, kws in PRECEDENT_KEYWORDS.items():
+        scores[ct] = sum(text.count(kw) for kw in kws)
+    best = max(scores, key=scores.get)
+    return best if scores[best] >= 2 else None  # 최소 2회 매칭은 돼야 도메인 확정
+
+
+def _load_precedent_data(precedent_root: Path, per_type_cap: int = 1500) -> list[dict]:
+    """precedent-kr 의 .md 판례를 도메인별로 분류하여 (판시사항+판결요지) 1청크로 인덱싱."""
+    items: list[dict] = []
+    if not precedent_root.exists():
+        print(f"[INFO] precedent-kr 디렉토리가 없습니다: {precedent_root}")
+        return items
+
+    counts: dict[str, int] = {ct: 0 for ct in PRECEDENT_KEYWORDS}
+    seen = 0
+    unlimited = per_type_cap <= 0  # 0 이하면 무제한
+
+    # 민사·일반행정만 대상 — 형사/세무/특허/가사는 계약 분석 도메인과 직접성 낮음
+    target_dirs = ["민사", "일반행정"]
+    md_files = []
+    for sub in target_dirs:
+        sub_path = precedent_root / sub
+        if sub_path.exists():
+            md_files.extend(sub_path.rglob("*.md"))
+
+    for md_file in md_files:
+        # 무제한이 아니면, 모든 도메인이 cap 채웠으면 중단
+        if not unlimited and all(counts[ct] >= per_type_cap for ct in PRECEDENT_KEYWORDS):
+            break
+
+        try:
+            md_text = md_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        seen += 1
+
+        frontmatter, sections = _parse_precedent_md(md_text)
+        if not sections:
+            continue
+
+        # 분류 대상은 짧은 헤드노트(판시사항 + 판결요지)만 사용 — 판례내용 전문은 노이즈 큼
+        headnote = sections.get("판시사항", "")
+        gist = sections.get("판결요지", "")
+        ref_law = sections.get("참조조문", "")
+        composite = f"{headnote}\n{gist}\n{ref_law}"
+        if len(composite.strip()) < 50:
+            continue
+
+        ct = _classify_precedent(composite)
+        if ct is None:
+            continue
+        if not unlimited and counts[ct] >= per_type_cap:
+            continue
+
+        case_name = frontmatter.get("사건명", "")
+        case_no = frontmatter.get("사건번호", "")
+        court = frontmatter.get("법원명", "")
+        date = frontmatter.get("선고일자", "")
+
+        header = f"[판례] {court} {case_no} ({date}) - {case_name}"
+        body_parts = []
+        if headnote:
+            body_parts.append(f"판시사항: {headnote}")
+        if gist:
+            body_parts.append(f"판결요지: {gist}")
+        if ref_law:
+            body_parts.append(f"참조조문: {ref_law[:200]}")
+        text_body = (header + "\n" + "\n".join(body_parts))[:1500]
+
+        items.append({
+            "id": _content_id(f"prec-{ct}", text_body),
+            "text": text_body,
+            "metadata": {
+                "source": "precedent_kr",
+                "case_no": str(case_no),
+                "court": str(court),
+                "case_name": str(case_name),
+                "date": str(date),
+                "contract_type": ct,
+            },
+        })
+        counts[ct] += 1
+
+    print(f"  precedent-kr 스캔: {seen}건 → 인덱싱 {sum(counts.values())}건")
+    for ct, cnt in counts.items():
+        print(f"    판례 {ct}: {cnt}건")
+    return items
+
+
 def load_aihub_data(data_dir: str) -> list[dict]:
     """AI HUB 법률 데이터에서 임대차 관련 항목을 추출."""
     data_path = Path(data_dir)
@@ -454,7 +607,13 @@ def load_aihub_data(data_dir: str) -> list[dict]:
     return clause_items + judgment_items
 
 
-def build_knowledge_base(data_dir: str | None = None, clear: bool = False, include_laws: bool = False):
+def build_knowledge_base(
+    data_dir: str | None = None,
+    clear: bool = False,
+    include_laws: bool = False,
+    include_precedents: bool = False,
+    precedent_cap: int = 1500,
+):
     if clear:
         chroma_dir = Path(settings.chroma_persist_dir)
         bm25_dir = Path(DATA_DIR) / "bm25"
@@ -497,17 +656,44 @@ def build_knowledge_base(data_dir: str | None = None, clear: bool = False, inclu
         print(f"  법률 본문 데이터: {len(law_items)}건")
         items.extend(law_items)
 
-    # 동일 텍스트 중복 제거 (hash 기반 id 덕분에 가능)
+    if include_precedents:
+        prec_root = Path(__file__).resolve().parent.parent / "data" / "raw" / "precedents" / "precedent-kr"
+        print(f"  precedent-kr 판례 로딩 중 (도메인당 최대 {precedent_cap}건)...")
+        prec_items = _load_precedent_data(prec_root, per_type_cap=precedent_cap)
+        items.extend(prec_items)
+
+    # 동일 텍스트 중복 제거 (cross-source) — id 기반은 prefix가 달라 fail, 정규화 본문 hash로 비교
+    _PREFIX_RE = re.compile(r"^\[(법률|판례)\][^\n]*\n", re.MULTILINE)
+    _WS_RE = re.compile(r"\s+")
+    def _norm_for_dedup(text: str) -> str:
+      t = _PREFIX_RE.sub("", text, count=1)
+      return _WS_RE.sub(" ", t).strip().lower()
+
+    # 우선순위: 내장 > 법률(law) > 판례(precedent_kr) > aihub — 먼저 들어온 항목 유지
+    SOURCE_PRIORITY = {"law": 1, "precedent_kr": 2}
+    def _priority(item: dict) -> int:
+      src = item.get("metadata", {}).get("source", "")
+      if src.startswith("aihub"): return 3
+      if src in SOURCE_PRIORITY: return SOURCE_PRIORITY[src]
+      return 0  # 내장 KB
+    items.sort(key=_priority)
+
     seen_ids = set()
+    seen_norm = set()
     dedup_items = []
     for item in items:
       if item["id"] in seen_ids:
         continue
+      norm = _norm_for_dedup(item["text"])
+      if len(norm) >= 50 and norm in seen_norm:
+        continue
       seen_ids.add(item["id"])
+      if len(norm) >= 50:
+        seen_norm.add(norm)
       dedup_items.append(item)
     dropped = len(items) - len(dedup_items)
     if dropped:
-      print(f"  중복 텍스트 {dropped}건 제거 → {len(dedup_items)}건")
+      print(f"  중복 텍스트 {dropped}건 제거 → {len(dedup_items)}건 (cross-source 정규화 hash)")
     items = dedup_items
 
     print(f"[2/3] 임베딩 생성 + ChromaDB 저장 중... (총 {len(items)}건)")
@@ -554,5 +740,22 @@ if __name__ == "__main__":
         action="store_true",
         help="backend/data/raw/laws/ 디렉토리의 법률 본문을 KB에 포함 (download_laws.py 선행)",
     )
+    parser.add_argument(
+        "--include-precedents",
+        action="store_true",
+        help="backend/data/raw/precedents/precedent-kr 판례를 도메인별 분류 후 KB에 포함",
+    )
+    parser.add_argument(
+        "--precedent-cap",
+        type=int,
+        default=1500,
+        help="precedent-kr 인덱싱 시 도메인(contract_type)당 최대 건수 (기본 1500)",
+    )
     args = parser.parse_args()
-    build_knowledge_base(data_dir=args.data_dir, clear=args.clear, include_laws=args.include_laws)
+    build_knowledge_base(
+        data_dir=args.data_dir,
+        clear=args.clear,
+        include_laws=args.include_laws,
+        include_precedents=args.include_precedents,
+        precedent_cap=args.precedent_cap,
+    )

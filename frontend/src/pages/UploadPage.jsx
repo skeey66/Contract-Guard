@@ -151,7 +151,9 @@ export default function UploadPage() {
     try {
       const data = await uploadDocument(file);
       if (data.status === "completed" && data.result) {
-        navigate("/result", { state: { result: data.result } });
+        // URL에 analysisId를 포함시켜 새로고침/직접접근 복원이 가능하도록 한다
+        const id = data.result.id;
+        navigate(`/result/${encodeURIComponent(id)}`, { state: { result: data.result } });
       } else {
         setError(data.error || "분석에 실패했습니다.");
       }
@@ -362,6 +364,25 @@ export default function UploadPage() {
             </div>
             <h3>근로 계약</h3>
             <p>근로기준법 기반으로 임금, 근무시간, 퇴직금, 해고 조건 등 근로자에게 불리한 조항을 검토합니다</p>
+          </TiltCard>
+          <TiltCard className="feature-card fade-up" style={{ animationDelay: "1.0s" }}>
+            <div className="feature-icon-wrap feature-icon-service">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+              </svg>
+            </div>
+            <h3>용역·도급 계약</h3>
+            <p>민법 도급편과 하도급법 기반으로 대금 지급 기한, 검수 절차, 일방적 사양 변경 등 수급인에게 불리한 조항을 분석합니다</p>
+          </TiltCard>
+          <TiltCard className="feature-card fade-up" style={{ animationDelay: "1.1s" }}>
+            <div className="feature-icon-wrap feature-icon-loan">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <line x1="12" y1="1" x2="12" y2="23" />
+                <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+              </svg>
+            </div>
+            <h3>금전소비대차 계약</h3>
+            <p>이자제한법, 대부업법, 보증인 보호 특별법 기반으로 이자율, 기한이익 상실, 보증 조건 등 차주에게 불리한 조항을 검토합니다</p>
           </TiltCard>
         </div>
       </section>

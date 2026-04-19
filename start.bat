@@ -15,7 +15,7 @@ curl -s http://localhost:11434/api/tags >nul 2>&1 && (echo   -^> Ollama OK) || (
 
 :: 2. 백엔드 시작
 echo [2/3] 백엔드 시작 (port 8000)...
-start /B "" cmd /c ".venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000" >nul 2>&1
+start /B "" cmd /c ".venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000" >nul 2>&1
 set BACKEND_OK=0
 for /L %%i in (1,1,15) do (
   if !BACKEND_OK!==0 (

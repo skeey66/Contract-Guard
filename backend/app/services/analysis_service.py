@@ -7,7 +7,7 @@ from pathlib import Path
 from backend.app.config import settings
 from backend.app.models.clause import Clause
 from backend.app.models.risk import RiskLevel, RiskDetail
-from backend.app.models.analysis import ClauseAnalysis, AnalysisResult
+from backend.app.models.analysis import ClauseAnalysis, AnalysisResult, ReferenceItem
 from backend.app.rag.chain import analyze_all_clauses
 from backend.app.contract_types import CONTRACT_TYPES
 from backend.app.services.rewrite_service import rewrite_risky_clauses
@@ -68,6 +68,20 @@ async def run_analysis(
         logger.error(f"분석 결과 저장 실패 (응답은 정상 반환): {e}")
 
     return analysis_result
+
+
+# source 분류 — 홈 화면 KB 카드와 동일한 분류 체계
+_JUDGMENT_SOURCES = {"precedent_kr", "aihub_판결문", "판례/실무"}
+_CLAUSE_SOURCES = {"aihub_약관", "약관규제법/판례", "실무"}
+
+
+def _categorize_source(source: str) -> str:
+    """metadata.source를 dashboard 카테고리(law/judgment/clause)로 매핑."""
+    if source in _JUDGMENT_SOURCES:
+        return "judgment"
+    if source in _CLAUSE_SOURCES:
+        return "clause"
+    return "law"
 
 
 def _normalize_risk_type(raw: str, valid_types: list[str]) -> str:
@@ -136,10 +150,25 @@ def _build_clause_analyses(
             explanation = "[분석 실패] 분석 파이프라인에서 이 조항이 누락되었습니다. 수동 검토가 필요합니다."
             analysis_status = "missing"
 
-        # 해당 조항 전용 참고문헌 사용
-        clause_refs = per_clause_refs.get(clause.index, [])
+        # 해당 조항 전용 참고문헌 — 유사도 내림차순 정렬 후 표시
+        clause_refs = sorted(
+            per_clause_refs.get(clause.index, []),
+            key=lambda r: r.get("similarity", 0) or 0,
+            reverse=True,
+        )
         similar_refs = [
             f"{ref.get('text', '')[:80]}... (유사도: {ref.get('similarity', 0):.2f})"
+            for ref in clause_refs
+        ]
+        # 대시보드 집계용 구조화 메타데이터 — 카테고리 분류 + 출처/조문 보존
+        references_detail = [
+            ReferenceItem(
+                text=ref.get("text", ""),
+                source=(ref.get("metadata") or {}).get("source", "unknown"),
+                category=_categorize_source((ref.get("metadata") or {}).get("source", "")),
+                similarity=float(ref.get("similarity", 0) or 0),
+                article=(ref.get("metadata") or {}).get("article") or None,
+            )
             for ref in clause_refs
         ]
 
@@ -153,6 +182,7 @@ def _build_clause_analyses(
             confidence=confidence,
             risks=risks,
             similar_references=similar_refs,
+            references_detail=references_detail,
             explanation=explanation,
             analysis_status=analysis_status,
             suggested_rewrite=suggested_rewrite,

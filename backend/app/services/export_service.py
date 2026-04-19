@@ -58,6 +58,19 @@ def _is_risky(ca: ClauseAnalysis) -> bool:
     return ca.risk_level in (RiskLevel.HIGH, RiskLevel.MEDIUM)
 
 
+def _final_rewrite(ca: ClauseAnalysis) -> tuple[str | None, str]:
+    """수정안 본문과 라벨을 우선순위에 따라 반환.
+
+    우선순위: user_override(사용자 직접 수정) > suggested_rewrite(LLM 권고안)
+    수정안이 없으면 (None, "")을 반환한다.
+    """
+    if ca.user_override and ca.user_override.strip():
+        return ca.user_override, "[수정안 (사용자)]"
+    if ca.suggested_rewrite and ca.suggested_rewrite.strip():
+        return ca.suggested_rewrite, "[권고 수정안]"
+    return None, ""
+
+
 def _risk_label(level: RiskLevel) -> str:
     return {
         RiskLevel.HIGH: "고위험",
@@ -123,13 +136,14 @@ def build_docx(result: AnalysisResult) -> bytes:
         for line in ca.clause_content.splitlines() or [ca.clause_content]:
             doc.add_paragraph(line)
 
-        # 수정안 (있을 때만)
-        if _is_risky(ca) and ca.suggested_rewrite:
+        # 수정안 (사용자 수정안 > LLM 권고안 순서로 1개만 표시)
+        rewrite_text, rewrite_label = _final_rewrite(ca)
+        if _is_risky(ca) and rewrite_text:
             new_label = doc.add_paragraph()
-            run = new_label.add_run("[권고 수정안]")
+            run = new_label.add_run(rewrite_label)
             run.bold = True
             run.font.color.rgb = RGBColor(0x1F, 0x4E, 0x8B)
-            for line in ca.suggested_rewrite.splitlines() or [ca.suggested_rewrite]:
+            for line in rewrite_text.splitlines() or [rewrite_text]:
                 p = doc.add_paragraph(line)
                 for r in p.runs:
                     r.font.color.rgb = RGBColor(0x1F, 0x4E, 0x8B)
@@ -232,10 +246,11 @@ def build_pdf(result: AnalysisResult) -> bytes:
         story.append(_para(risk_line, risk_style_map.get(ca.risk_level, styles["body"])))
         story.append(_para("[원문]", styles["label"]))
         story.append(_para(ca.clause_content, styles["body"]))
-        if _is_risky(ca) and ca.suggested_rewrite:
+        rewrite_text, rewrite_label = _final_rewrite(ca)
+        if _is_risky(ca) and rewrite_text:
             story.append(Spacer(1, 0.2 * cm))
-            story.append(_para("[권고 수정안]", styles["label"]))
-            story.append(_para(ca.suggested_rewrite, styles["rewrite"]))
+            story.append(_para(rewrite_label, styles["label"]))
+            story.append(_para(rewrite_text, styles["rewrite"]))
         story.append(Spacer(1, 0.4 * cm))
 
     doc.build(story)
@@ -333,9 +348,10 @@ def _build_hwpx_section(result: AnalysisResult) -> str:
         body.append(_hwpx_paragraph("[원문]", bold=True))
         for line in (ca.clause_content or "").splitlines() or [ca.clause_content or ""]:
             body.append(_hwpx_paragraph(line))
-        if _is_risky(ca) and ca.suggested_rewrite:
-            body.append(_hwpx_paragraph("[권고 수정안]", bold=True, color="1F4E8B"))
-            for line in ca.suggested_rewrite.splitlines() or [ca.suggested_rewrite]:
+        rewrite_text, rewrite_label = _final_rewrite(ca)
+        if _is_risky(ca) and rewrite_text:
+            body.append(_hwpx_paragraph(rewrite_label, bold=True, color="1F4E8B"))
+            for line in rewrite_text.splitlines() or [rewrite_text]:
                 body.append(_hwpx_paragraph(line, color="1F4E8B"))
         body.append(_hwpx_paragraph(""))
 

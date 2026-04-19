@@ -20,7 +20,7 @@ curl -s http://localhost:11434/api/tags > /dev/null && echo "  -> Ollama OK" || 
 echo "[2/3] 백엔드 시작 (port 8000)..."
 pkill -f "uvicorn backend.app" 2>/dev/null || true
 sleep 1
-.venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 > /dev/null 2>&1 &
+.venv/bin/uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000 > /dev/null 2>&1 &
 sleep 4
 curl -s http://localhost:8000/health > /dev/null && echo "  -> 백엔드 OK" || echo "  -> 백엔드 실패"
 

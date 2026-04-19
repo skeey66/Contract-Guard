@@ -6,6 +6,8 @@ taskkill /f /im ollama.exe >nul 2>&1 && (echo Ollama 종료) || (echo Ollama 미
 
 :: 백엔드: uvicorn 부모/자식 프로세스 모두 종료 (CommandLine 매칭)
 powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*uvicorn backend.app.main*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+:: 백엔드 8000 포트 기반 강제 종료 (CommandLine 매칭 누락 대비)
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8000 ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>&1
 echo 백엔드 종료
 
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5173 ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>&1

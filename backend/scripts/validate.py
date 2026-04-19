@@ -26,7 +26,8 @@ def _nfc(text: str) -> str:
 
 def load_validation_set() -> list[dict]:
     """Validation 불리 + Training 유리 임대차 약관 데이터를 로드."""
-    aihub_base = PROJECT_ROOT / "data" / "raw" / "aihub" / "01.데이터"
+    # CLAUDE.md: AI Hub 원천 데이터 위치는 backend/data/raw/aihub/ (프로젝트 루트의 data/raw/가 아님)
+    aihub_base = PROJECT_ROOT / "backend" / "data" / "raw" / "aihub" / "01.데이터"
     items = []
 
     search_paths = [

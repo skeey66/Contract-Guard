@@ -18,17 +18,33 @@ from backend.app.config import DATA_DIR
 
 # 계약 유형 매핑 (build_kb.py와 공유)
 LAW_TO_CONTRACT_TYPES: dict[str, list[str]] = {
+    # 임대차
     "주택임대차보호법": ["lease"],
     "상가건물임대차보호법": ["lease"],
-    "민법": ["lease", "sales"],  # 임대차편/매매편 양쪽으로 라우팅 (article_no 범위 필터)
+    # 민법: 임대차편(618-654) / 매매편(563-595) / 도급편(664-674) / 소비대차편(598-608)
+    "민법": ["lease", "sales", "service", "loan"],
+    # 매매·중개
     "공인중개사법": ["sales"],
     "부동산거래신고등에관한법률": ["sales"],
+    # 근로 (기존 + 강화)
     "근로기준법": ["employment"],
     "최저임금법": ["employment"],
     "기간제및단시간근로자보호등에관한법률": ["employment"],
     "남녀고용평등과일ㆍ가정양립지원에관한법률": ["employment"],
+    "노동조합및노동관계조정법": ["employment"],
+    "근로자퇴직급여보장법": ["employment"],
+    "산업안전보건법": ["employment"],
+    "직업안정법": ["employment"],
+    "파견근로자보호등에관한법률": ["employment"],
+    # 용역/도급 (service)
+    "하도급거래공정화에관한법률": ["service"],
+    "건설산업기본법": ["service"],
+    # 금전소비대차 (loan)
+    "이자제한법": ["loan"],
+    "대부업등의등록및금융이용자보호에관한법률": ["loan"],
+    "보증인보호를위한특별법": ["loan"],
     # 약관규제법: 모든 계약에 공통 적용 (불공정 약관 무효 판단의 일반 근거)
-    "약관의규제에관한법률": ["lease", "sales", "employment"],
+    "약관의규제에관한법률": ["lease", "sales", "employment", "service", "loan"],
     # 민사집행법: 보증금 회수·강제집행 관련 (임대차에서 가장 빈번)
     "민사집행법": ["lease"],
 }

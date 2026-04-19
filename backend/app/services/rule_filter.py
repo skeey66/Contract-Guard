@@ -157,6 +157,74 @@ _LEASE_HIGH_PATTERNS: list[tuple[str, str, str]] = [
 ]
 
 
+# ────────────────────────────────────────────────
+# high 확정 패턴 (용역·도급 - 하도급법 명백 위반만)
+# ────────────────────────────────────────────────
+# 일반 도급계약 전반이 아니라 객관 수치 기준이 분명한 사안만 결정적으로 잡는다.
+_SERVICE_HIGH_PATTERNS: list[tuple[str, str, str]] = [
+  # 대금 지급 60일 초과: 하도급법 제13조 위반
+  # 두 어순 모두 매칭: "대금...지급...N일" 와 "대금...N일 (이내) 지급"
+  (
+    r"(?:대금|보수|용역\s*대금|도급\s*대금|하도급\s*대금)[^.]{0,60}(?:6[1-9]|[7-9][0-9]|[1-9][0-9]{2,})\s*일[^.]{0,20}(?:이내|이후)?[^.]{0,20}지(?:급|불)",
+    "대금지급_지연",
+    "하도급법상 대금 지급 60일 한도를 초과",
+  ),
+  (
+    r"(?:대금|보수|용역\s*대금|도급\s*대금|하도급\s*대금)[^.]{0,40}(?:지급|지불)[^.]{0,30}(?:6[1-9]|[7-9][0-9]|[1-9][0-9]{2,})\s*일",
+    "대금지급_지연",
+    "하도급법상 대금 지급 60일 한도를 초과",
+  ),
+  # 검수 무기한 보류로 사실상 대금 지급 거부
+  (
+    r"검수[^.]{0,40}(?:무기한|기한\s*없|기한을?\s*정하지\s*않)",
+    "검수_불공정",
+    "검수 기한을 무기한으로 두어 대금 지급을 거부할 수 있는 구조",
+  ),
+  # 발주자 일방적 사양·금액 변경
+  (
+    r"(?:사양|범위|금액|단가)[^.]{0,30}(?:발주자|갑)[^.]{0,15}(?:일방적?\s*으?로|단독)[^.]{0,15}(?:변경|결정)",
+    "일방적_사양변경",
+    "발주자가 사양·금액을 일방적으로 변경할 수 있는 조항",
+  ),
+]
+
+# ────────────────────────────────────────────────
+# high 확정 패턴 (금전소비대차 - 이자제한법 명백 위반만)
+# ────────────────────────────────────────────────
+# 이자율 수치(연 21% 이상)가 본문에 명시된 경우만 결정적으로 high 처리한다.
+_LOAN_HIGH_PATTERNS: list[tuple[str, str, str]] = [
+  # 연 21% 이상 (이자제한법 시행령 연 20% 한도 초과)
+  (
+    r"(?:연|연리|이자율)[^.]{0,10}(?:2[1-9]|[3-9][0-9]|[1-9][0-9]{2,})\s*(?:%|퍼센트|프로)",
+    "이자_초과",
+    "이자제한법상 연 20% 한도를 초과한 이자율",
+  ),
+  # 월 1.7% 이상 ≈ 연 20% 초과 (월 단위 표기)
+  (
+    r"월\s*(?:1\.[789]|[2-9]|[1-9][0-9]+)\s*(?:%|퍼센트|프로)",
+    "이자_초과",
+    "월이율 환산 시 이자제한법 연 20% 한도를 초과",
+  ),
+  # 무서면·구두 보증 (보증인 보호 특별법 제4조 위반)
+  (
+    r"보증[^.]{0,20}(?:구두|구두로|서면\s*없|서면\s*없이)",
+    "보증인_보호위반",
+    "서면 없는 보증은 보증인 보호 특별법상 무효",
+  ),
+  # 채권자 일방 기한이익 상실 + 통지 없음 (양쪽 어순 모두)
+  (
+    r"기한\s*이익[^.]{0,20}상실[^.]{0,30}(?:통지\s*없|통보\s*없|즉시)",
+    "일방적_기한이익상실",
+    "사전 통지 없는 일방적 기한이익 상실 조항",
+  ),
+  (
+    r"(?:즉시|통지\s*없이|통보\s*없이|1\s*회\s*연체)[^.]{0,40}기한\s*이익[^.]{0,15}상실",
+    "일방적_기한이익상실",
+    "사전 통지 없는 일방적 기한이익 상실 조항",
+  ),
+]
+
+
 def _normalize(text: str) -> str:
   """공백·줄바꿈 정규화."""
   return re.sub(r"\s+", " ", text).strip()
@@ -168,6 +236,7 @@ def check_safe_rule(clause: Clause, contract_type: str = "lease") -> tuple[bool,
   Returns:
     (is_safe, 매칭된 규칙 설명). 매칭되지 않으면 (False, "").
   """
+  # safe 확정은 lease만 운영. service/loan은 false positive 위험이 커서 적용하지 않음.
   if contract_type != "lease":
     return False, ""
 
@@ -185,18 +254,26 @@ def check_safe_rule(clause: Clause, contract_type: str = "lease") -> tuple[bool,
   return False, ""
 
 
+_HIGH_PATTERNS_BY_TYPE: dict[str, list[tuple[str, str, str]]] = {
+  "lease": _LEASE_HIGH_PATTERNS,
+  "service": _SERVICE_HIGH_PATTERNS,
+  "loan": _LOAN_HIGH_PATTERNS,
+}
+
+
 def check_high_rule(clause: Clause, contract_type: str = "lease") -> tuple[bool, str, str]:
   """조항이 확정 high 패턴에 해당하는지 검사.
 
   Returns:
     (is_high, 위험 유형, 설명). 매칭되지 않으면 (False, "", "").
   """
-  if contract_type != "lease":
+  patterns = _HIGH_PATTERNS_BY_TYPE.get(contract_type)
+  if not patterns:
     return False, "", ""
 
   body = _normalize(clause.content)
 
-  for pattern, risk_type, reason in _LEASE_HIGH_PATTERNS:
+  for pattern, risk_type, reason in patterns:
     if re.search(pattern, body):
       return True, risk_type, reason
 

@@ -23,6 +23,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<UploadPage />} />
             <Route path="/result" element={<ResultPage />} />
+            <Route path="/result/:analysisId" element={<ResultPage />} />
           </Routes>
         </main>
         <footer className="app-footer">
