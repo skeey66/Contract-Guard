@@ -1,4 +1,3 @@
-import json
 import logging
 import uuid
 from difflib import SequenceMatcher
@@ -44,12 +43,8 @@ async def run_analysis(
 
     risky = [ca for ca in clause_analyses if ca.risk_level != RiskLevel.SAFE]
 
-    # LLM 기반 종합 평가 — 실패 시 카운트 기반 폴백을 자동 사용
-    try:
-        summary = await generate_overall_summary(clause_analyses, contract_type=contract_type)
-    except Exception as e:
-        logger.error(f"종합 요약 생성 실패 (분석 결과는 정상 반환): {e}")
-        summary = _generate_summary(clause_analyses, risky)
+    # LLM 기반 종합 평가 — 내부에서 타임아웃·예외를 잡아 카운트 기반 폴백으로 대체함
+    summary = await generate_overall_summary(clause_analyses, contract_type=contract_type)
 
     analysis_result = AnalysisResult(
         id=str(uuid.uuid4()),
@@ -207,33 +202,3 @@ def _parse_risk_level(value: str) -> RiskLevel:
         "safe": RiskLevel.SAFE,
     }
     return mapping.get(value.lower().strip(), RiskLevel.MEDIUM)
-
-
-def _generate_summary(
-    all_analyses: list[ClauseAnalysis],
-    risky_analyses: list[ClauseAnalysis],
-) -> str:
-    total = len(all_analyses)
-    risky_count = len(risky_analyses)
-
-    if risky_count == 0:
-        return f"총 {total}개 조항을 분석한 결과, 특별히 불리한 조항이 발견되지 않았습니다."
-
-    high = sum(1 for a in risky_analyses if a.risk_level == RiskLevel.HIGH)
-    medium = sum(1 for a in risky_analyses if a.risk_level == RiskLevel.MEDIUM)
-    low = sum(1 for a in risky_analyses if a.risk_level == RiskLevel.LOW)
-
-    parts = []
-    if high:
-        parts.append(f"고위험 {high}개")
-    if medium:
-        parts.append(f"중위험 {medium}개")
-    if low:
-        parts.append(f"저위험 {low}개")
-
-    risk_summary = ", ".join(parts)
-    return (
-        f"총 {total}개 조항 중 {risky_count}개 조항에서 "
-        f"위험 요소가 발견되었습니다 ({risk_summary}). "
-        f"세부 내용을 확인하고 계약 전 수정을 요청하세요."
-    )

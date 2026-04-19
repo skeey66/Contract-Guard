@@ -11,7 +11,7 @@ import re
 from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 
 from backend.app.models.clause import Clause
-from backend.app.models.risk import RiskDetail, RiskLevel
+from backend.app.models.risk import RiskDetail
 from backend.app.services.llm_service import get_llm
 from backend.app.rag.prompts import format_references
 
@@ -192,10 +192,3 @@ async def rewrite_risky_clauses(
             out[idx] = text
     logger.info(f"수정안 생성 완료: {len(out)}/{len(targets)}개 성공")
     return out
-
-
-def is_rewrite_target(risk_level: RiskLevel | str) -> bool:
-    """주어진 위험도가 수정안 생성 대상인지 판정."""
-    if isinstance(risk_level, RiskLevel):
-        return risk_level in (RiskLevel.HIGH, RiskLevel.MEDIUM)
-    return str(risk_level).lower().strip() in {"high", "medium"}
