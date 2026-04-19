@@ -11,6 +11,7 @@ from backend.app.models.analysis import ClauseAnalysis, AnalysisResult, Referenc
 from backend.app.rag.chain import analyze_all_clauses
 from backend.app.contract_types import CONTRACT_TYPES
 from backend.app.services.rewrite_service import rewrite_risky_clauses
+from backend.app.services.summary_service import generate_overall_summary
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,13 @@ async def run_analysis(
     )
 
     risky = [ca for ca in clause_analyses if ca.risk_level != RiskLevel.SAFE]
-    summary = _generate_summary(clause_analyses, risky)
+
+    # LLM 기반 종합 평가 — 실패 시 카운트 기반 폴백을 자동 사용
+    try:
+        summary = await generate_overall_summary(clause_analyses, contract_type=contract_type)
+    except Exception as e:
+        logger.error(f"종합 요약 생성 실패 (분석 결과는 정상 반환): {e}")
+        summary = _generate_summary(clause_analyses, risky)
 
     analysis_result = AnalysisResult(
         id=str(uuid.uuid4()),

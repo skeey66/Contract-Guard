@@ -76,15 +76,22 @@ def retrieve_similar(
         }
         vector_results.append((doc_id, entry))
 
-    # BM25 검색
+    # BM25 검색 — 원점수는 [0, 무제한]이라 벡터 유사도(0~1)와 동일 필드에 저장하면
+    # 표시용 비교가 망가진다. min-max 정규화는 매 쿼리의 1등을 항상 1.0으로 만들어
+    # "100% 너무 많음" 문제를 일으키므로, 점수 자체에 비례하는 sigmoid-like 매핑
+    # `score / (score + C)`을 사용한다 (C=8). 일반적 BM25 범위(5~60)에서
+    # 약 0.38~0.88로 매핑되어 saturation이 발생하지 않는다.
     bm25_raw = bm25_service.search(text, k=k, contract_type=contract_type)
     bm25_results: list[tuple[str, dict]] = []
+    BM25_SCALE_C = 8.0
+    BM25_CAP = 0.92  # 100% 쏠림 방지를 위한 상한
     for doc_dict, score in bm25_raw:
         doc_id = doc_dict.get("id", doc_dict["text"][:80])
+        sim = min(BM25_CAP, score / (score + BM25_SCALE_C)) if score > 0 else 0.0
         entry = {
             "id": doc_id,
             "text": doc_dict["text"],
-            "similarity": round(score, 4),
+            "similarity": round(sim, 4),
             "metadata": doc_dict.get("metadata", {}),
         }
         bm25_results.append((doc_id, entry))

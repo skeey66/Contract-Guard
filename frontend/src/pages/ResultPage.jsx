@@ -48,8 +48,69 @@ function ExportPanel({ analysisId }) {
   );
 }
 
+// LLM이 생성한 종합 요약을 `■ 라벨` 단락 단위로 분할하여 렌더링.
+// LLM이 라벨을 누락한 경우 단순 텍스트로 폴백.
+function SummaryRenderer({ text }) {
+  if (!text) {
+    return <p className="dash-summary-text">분석된 조항을 종합한 요약입니다.</p>;
+  }
+
+  const sections = parseSummarySections(text);
+  if (sections.length === 0) {
+    return <p className="dash-summary-text">{text}</p>;
+  }
+
+  return (
+    <div className="dash-summary">
+      {sections.map((sec, i) => (
+        <div
+          key={i}
+          className={`dash-summary-section ${sec.label === "분석 통계" ? "dash-summary-stats" : ""}`}
+        >
+          {sec.label && <h4 className="dash-summary-label">{sec.label}</h4>}
+          <p className="dash-summary-body">{sec.body}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// `■ 라벨\n본문` 패턴을 파싱. 라벨 없는 단락은 첫 섹션에 본문만 들어감.
+function parseSummarySections(text) {
+  const lines = text.split("\n");
+  const sections = [];
+  let current = null;
+
+  for (const line of lines) {
+    const labelMatch = line.match(/^\s*■\s*(.+?)\s*$/);
+    if (labelMatch) {
+      if (current) sections.push(current);
+      current = { label: labelMatch[1], body: "" };
+    } else if (current) {
+      current.body += (current.body ? "\n" : "") + line;
+    } else if (line.trim()) {
+      // 라벨 없이 본문이 먼저 나오는 경우 — 라벨 없는 첫 섹션
+      if (sections.length === 0 || sections[sections.length - 1].label) {
+        sections.push({ label: null, body: line });
+      } else {
+        sections[sections.length - 1].body += "\n" + line;
+      }
+    }
+  }
+  if (current) sections.push(current);
+
+  return sections
+    .map((s) => ({ ...s, body: s.body.trim() }))
+    .filter((s) => s.body);
+}
+
 // 종합 요약 + 위험도 원그래프 + 카테고리 카운트 — 대시보드 헤드.
-function OverviewDashboard({ result, counts, refStats, onScrollToClause }) {
+function OverviewDashboard({ result, counts, aggregated, onScrollToClause, onOpenRefs }) {
+  const refStats = {
+    law: aggregated.law.length,
+    judgment: aggregated.judgment.length,
+    clause: aggregated.clause.length,
+  };
   // 핵심 위험 조항 상위 3개 (high → medium 순)
   const topRisky = useMemo(() => {
     const order = { high: 0, medium: 1, low: 2, safe: 3 };
@@ -84,7 +145,7 @@ function OverviewDashboard({ result, counts, refStats, onScrollToClause }) {
             </span>
             <h3>종합 요약</h3>
           </div>
-          <p className="dash-summary-text">{result.summary || "분석된 조항을 종합한 요약입니다."}</p>
+          <SummaryRenderer text={result.summary} />
 
           {topRisky.length > 0 && (
             <div className="dash-top-risky">
@@ -148,32 +209,269 @@ function OverviewDashboard({ result, counts, refStats, onScrollToClause }) {
           </div>
           <p className="dash-ref-note">
             전체 {refStats.law + refStats.judgment + refStats.clause}건의 자료를 근거로 분석했습니다.
-            조항을 선택하면 해당 조항에 사용된 자료를 우측 패널에서 확인할 수 있습니다.
           </p>
+          <button
+            type="button"
+            className="dash-ref-view-all"
+            onClick={onOpenRefs}
+            disabled={refStats.law + refStats.judgment + refStats.clause === 0}
+          >
+            전체 자료 보기
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </button>
         </div>
       </div>
     </section>
   );
 }
 
-// 카테고리별 참고자료 카운트 — 대시보드의 참고 자료 카드용.
-// 동일 텍스트는 1건으로 중복 제거.
-function countReferencesByCategory(clauseAnalyses) {
-  const buckets = { law: new Set(), judgment: new Set(), clause: new Set() };
+const REF_CATEGORY_TABS = [
+  { key: "law", label: "법률·시행령" },
+  { key: "judgment", label: "판례" },
+  { key: "clause", label: "표준약관·실무" },
+];
+
+// 모든 조항의 references_detail을 카테고리별로 합치고 텍스트 기준 중복 제거.
+// 동일 자료가 여러 조항에서 인용되면 가장 높은 유사도로 기록하고 인용 조항 목록을 모은다.
+function aggregateReferences(clauseAnalyses) {
+  const buckets = { law: new Map(), judgment: new Map(), clause: new Map() };
   for (const ca of clauseAnalyses) {
     const refs = ca.references_detail || [];
     for (const ref of refs) {
       const cat = ref.category || "law";
       const bucket = buckets[cat] || buckets.law;
       const key = (ref.text || "").trim().slice(0, 200);
-      if (key) bucket.add(key);
+      if (!key) continue;
+      const existing = bucket.get(key);
+      if (existing) {
+        existing.similarity = Math.max(existing.similarity, ref.similarity || 0);
+        if (!existing.cited_by.includes(ca.clause_index)) {
+          existing.cited_by.push(ca.clause_index);
+        }
+      } else {
+        bucket.set(key, {
+          text: ref.text,
+          source: ref.source,
+          article: ref.article,
+          similarity: ref.similarity || 0,
+          cited_by: [ca.clause_index],
+        });
+      }
     }
   }
+  const sortBucket = (m) =>
+    [...m.values()].sort((a, b) => b.similarity - a.similarity);
   return {
-    law: buckets.law.size,
-    judgment: buckets.judgment.size,
-    clause: buckets.clause.size,
+    law: sortBucket(buckets.law),
+    judgment: sortBucket(buckets.judgment),
+    clause: sortBucket(buckets.clause),
   };
+}
+
+// 전체 참고 자료 모달 — 카테고리 탭으로 분류된 자료를 한 번에 열람.
+function ReferencesModal({ aggregated, onClose, onScrollToClause }) {
+  const initialTab = aggregated.law.length > 0
+    ? "law"
+    : aggregated.judgment.length > 0
+      ? "judgment"
+      : aggregated.clause.length > 0
+        ? "clause"
+        : "law";
+  const [activeTab, setActiveTab] = useState(initialTab);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const totalAll = aggregated.law.length + aggregated.judgment.length + aggregated.clause.length;
+  const items = aggregated[activeTab] || [];
+
+  const handleCitedClick = (idx) => {
+    onScrollToClause(idx);
+    onClose();
+  };
+
+  return (
+    <div className="ref-modal-overlay" onClick={onClose}>
+      <div className="ref-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="ref-modal-header">
+          <h2 className="ref-modal-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+              <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+            </svg>
+            분석에 사용된 참고 자료 ({totalAll}건)
+          </h2>
+          <button type="button" className="ref-modal-close" onClick={onClose} aria-label="닫기">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="ref-modal-tabs">
+          {REF_CATEGORY_TABS.map((tab) => {
+            const count = aggregated[tab.key]?.length || 0;
+            const isActive = activeTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                className={`agg-tab ${isActive ? "agg-tab-active" : ""}`}
+                onClick={() => setActiveTab(tab.key)}
+                disabled={count === 0}
+              >
+                {tab.label}
+                <span className="agg-tab-count">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="ref-modal-body">
+          {items.length === 0 ? (
+            <p className="agg-refs-empty">이 카테고리에 해당하는 자료가 없습니다.</p>
+          ) : (
+            <ul className="agg-refs-list">
+              {items.map((item, i) => (
+                <RefItem key={i} item={item} onCitedClick={handleCitedClick} />
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 참고자료 텍스트의 선두 카테고리 태그(`[판례]`, `[판결문]`, `[약관-불리]`, `[법률]`)를 추출.
+function extractRefTag(text) {
+  const m = text.match(/^\s*\[([^\]]{1,12})\]\s*/);
+  if (m) return { tag: m[1], rest: text.slice(m[0].length) };
+  return { tag: null, rest: text };
+}
+
+// 본문에서 알려진 섹션 헤더(`판시사항:`, `판결요지:`, `참조조문:`, `기초사실:`,
+// `판단근거:`, `관련법령:`)를 인식해 단락으로 분할.
+const REF_SECTION_HEADERS = [
+  "판시사항", "판결요지", "참조조문", "참조판례",
+  "기초사실", "사실관계", "판결주문", "이유",
+  "판단근거", "관련법령", "관련 조문", "조문내용",
+];
+
+function splitRefSections(text) {
+  const sections = [];
+  // 섹션 헤더 패턴: "헤더명:" 또는 "헤더명 :" — 줄 시작 또는 콜론 앞에서 매칭
+  const headerPattern = new RegExp(
+    `(?:^|\\n)\\s*(${REF_SECTION_HEADERS.join("|")})\\s*[:：]`,
+    "g",
+  );
+  const matches = [...text.matchAll(headerPattern)];
+
+  if (matches.length === 0) {
+    return [{ label: null, body: text.trim() }];
+  }
+
+  // 첫 매치 이전 텍스트는 라벨 없는 도입부
+  const firstStart = matches[0].index + (matches[0][0].startsWith("\n") ? 1 : 0);
+  const intro = text.slice(0, firstStart).trim();
+  if (intro) sections.push({ label: null, body: intro });
+
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i];
+    const labelStart = m.index + (m[0].startsWith("\n") ? 1 : 0);
+    const bodyStart = m.index + m[0].length;
+    const bodyEnd = i + 1 < matches.length ? matches[i + 1].index : text.length;
+    const body = text.slice(bodyStart, bodyEnd).trim();
+    if (body) sections.push({ label: m[1], body });
+  }
+
+  return sections;
+}
+
+// `**굵게**` 마크다운 표시를 React 노드로 변환.
+function renderInlineBold(text) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    const m = part.match(/^\*\*(.+)\*\*$/);
+    return m ? <strong key={i}>{m[1]}</strong> : <span key={i}>{part}</span>;
+  });
+}
+
+// 참고자료 항목 — 클릭 시 전체 본문 펼치기/접기.
+// 본문은 카테고리 태그·섹션 헤더를 인식해 가독성 있게 재구성.
+function RefItem({ item, onCitedClick }) {
+  const [expanded, setExpanded] = useState(false);
+  // similarity 필드는 벡터(0~1)·BM25 정규화(0~0.92) 혼재. 레거시 데이터 보호를 위해 클램프.
+  const simPct = Math.round(Math.max(0, Math.min(1, item.similarity || 0)) * 100);
+
+  const rawText = item.text || "";
+  const { tag, rest } = extractRefTag(rawText);
+  const sections = splitRefSections(rest);
+  const isLong = rest.length > 280;
+  const previewBody = !expanded && isLong ? rest.slice(0, 280).trim() + "…" : null;
+
+  return (
+    <li className={`agg-refs-item ${expanded ? "agg-refs-item-expanded" : ""}`}>
+      <button
+        type="button"
+        className="agg-refs-item-toggle"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+      >
+        <div className="agg-refs-item-head">
+          <span className="agg-refs-source">
+            {tag && <span className={`agg-refs-tag agg-refs-tag-${item.category || "law"}`}>{tag}</span>}
+            <span className="agg-refs-source-name">
+              {item.source}
+              {item.article ? <span className="agg-refs-article"> · {item.article}</span> : null}
+            </span>
+          </span>
+          <span className="agg-refs-meta">
+            <span className="agg-refs-sim">유사도 {simPct}%</span>
+            {isLong && (
+              <span className="agg-refs-expand-icon" aria-hidden="true">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <polyline points={expanded ? "18 15 12 9 6 15" : "6 9 12 15 18 9"} />
+                </svg>
+              </span>
+            )}
+          </span>
+        </div>
+
+        {previewBody !== null ? (
+          <p className="agg-refs-text">{renderInlineBold(previewBody)}</p>
+        ) : (
+          <div className="agg-refs-body">
+            {sections.map((sec, i) => (
+              <div key={i} className="agg-refs-sec">
+                {sec.label && <h5 className="agg-refs-sec-label">{sec.label}</h5>}
+                <p className="agg-refs-sec-body">{renderInlineBold(sec.body)}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </button>
+      <div className="agg-refs-cited">
+        <span className="agg-refs-cited-label">인용된 조항:</span>
+        {item.cited_by.map((idx) => (
+          <button
+            key={idx}
+            type="button"
+            className="agg-refs-cited-btn"
+            onClick={() => onCitedClick(idx)}
+          >
+            제{idx}조
+          </button>
+        ))}
+      </div>
+    </li>
+  );
 }
 
 function RewriteEditor({ analysisId, analysis, onUpdated }) {
@@ -444,6 +742,7 @@ export default function ResultPage() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [selectedIdx, setSelectedIdx] = useState(null);
+  const [refsModalOpen, setRefsModalOpen] = useState(false);
   const clauseRefs = useRef({});
   const splitLayoutRef = useRef(null);
 
@@ -479,8 +778,8 @@ export default function ResultPage() {
     return c;
   }, [orderedClauses]);
 
-  const refStats = useMemo(
-    () => (result ? countReferencesByCategory(result.clause_analyses) : { law: 0, judgment: 0, clause: 0 }),
+  const aggregated = useMemo(
+    () => (result ? aggregateReferences(result.clause_analyses) : { law: [], judgment: [], clause: [] }),
     [result]
   );
 
@@ -568,9 +867,18 @@ export default function ResultPage() {
       <OverviewDashboard
         result={result}
         counts={counts}
-        refStats={refStats}
+        aggregated={aggregated}
         onScrollToClause={scrollToClause}
+        onOpenRefs={() => setRefsModalOpen(true)}
       />
+
+      {refsModalOpen && (
+        <ReferencesModal
+          aggregated={aggregated}
+          onClose={() => setRefsModalOpen(false)}
+          onScrollToClause={scrollToClause}
+        />
+      )}
 
       <div className="doc-split-layout" ref={splitLayoutRef}>
         <div className="doc-viewer">

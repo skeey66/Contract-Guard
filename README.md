@@ -22,7 +22,7 @@ PDF, DOCX, HWP, HWPX 형식의 계약서를 업로드하면 각 조항별 위험
   ↓
 유사 법률·판례 검색 (ChromaDB + Ko-SBERT)
   ↓
-LLM 배치 분석 (Ollama · qwen3:8b, 4-bit 양자화)
+LLM 배치 분석 (Ollama · exaone3.5:7.8b, 4-bit 양자화)
   ↓
 위험도 분류 + 개선안 → 결과 화면 (React)
 ```
@@ -82,7 +82,7 @@ LLM 배치 분석 (Ollama · qwen3:8b, 4-bit 양자화)
 - **Axios** — API 통신 (10분 타임아웃)
 
 ### LLM
-- **Ollama** — 로컬 LLM 서버 (기본: `qwen3:8b`, 4-bit 양자화)
+- **Ollama** — 로컬 LLM 서버 (기본: `exaone3.5:7.8b`, 4-bit 양자화)
 
 ---
 
@@ -143,7 +143,7 @@ Contract-Guard/
 Ollama 설치 후, 터미널(명령 프롬프트)을 열고 아래 명령어를 입력합니다.
 
 ```bash
-ollama pull qwen3:8b
+ollama pull exaone3.5:7.8b
 ```
 
 약 5GB를 다운로드하므로 시간이 걸릴 수 있습니다. "success"가 나오면 완료입니다.
@@ -257,7 +257,7 @@ http://localhost:5173
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `OLLAMA_MODEL_NAME` | `qwen3:8b` | Ollama LLM 모델 |
+| `OLLAMA_MODEL_NAME` | `exaone3.5:7.8b` | Ollama LLM 모델 |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama 서버 주소 |
 | `OLLAMA_TIMEOUT` | `60` | LLM 호출 타임아웃 (초) |
 | `EMBEDDING_DEVICE` | `auto` | 임베딩 디바이스 (`auto`/`cpu`/`cuda`) |

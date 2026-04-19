@@ -8,7 +8,7 @@ DATA_DIR = BASE_DIR / "data"
 class Settings(BaseSettings):
     # Ollama 설정
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model_name: str = "qwen3:8b"
+    ollama_model_name: str = "exaone3.5:7.8b"
     ollama_timeout: int = 180
 
     # 임베딩 모델
