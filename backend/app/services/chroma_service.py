@@ -5,7 +5,7 @@ from backend.app.config import settings
 from backend.app.services.embedding_service import get_embeddings
 
 _vectorstore: Chroma | None = None
-_raw_client: chromadb.PersistentClient | None = None
+_raw_client: "chromadb.PersistentClient | None" = None
 
 
 def _get_raw_client() -> chromadb.PersistentClient:
