@@ -1,5 +1,7 @@
 import io
 import json
+import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -12,7 +14,16 @@ from backend.app.config import settings
 from backend.app.models.analysis import AnalysisResponse, AnalysisResult, ClauseAnalysis
 from backend.app.services.export_service import export_analysis, supported_formats
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# analysis_id는 UUID4로 발급되므로 엄격히 검증 — 경로 traversal 방지.
+_ANALYSIS_ID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
+
+
+def _validate_analysis_id(analysis_id: str) -> None:
+    if not _ANALYSIS_ID_RE.match(analysis_id):
+        raise HTTPException(status_code=400, detail="유효하지 않은 분석 ID입니다.")
 
 
 def _result_path(analysis_id: str) -> Path:
@@ -21,6 +32,7 @@ def _result_path(analysis_id: str) -> Path:
 
 def _load_result(analysis_id: str) -> AnalysisResult:
     """저장된 분석 결과를 모델로 복원."""
+    _validate_analysis_id(analysis_id)
     result_file = _result_path(analysis_id)
     if not result_file.exists():
         raise HTTPException(status_code=404, detail="분석 결과를 찾을 수 없습니다.")
@@ -39,10 +51,71 @@ def _save_result(result: AnalysisResult) -> None:
     tmp.replace(target)
 
 
+class AnalysisSummary(BaseModel):
+    """사이드바 이력 목록용 요약 모델.
+
+    created_at은 JSON에 값이 없으면 파일 mtime으로 폴백한다.
+    contract_type은 구버전 저장분에는 누락되어 있어 Optional.
+    """
+    id: str
+    filename: str
+    contract_type: str | None = None
+    created_at: str  # 항상 값 보장 (본문 또는 mtime)
+    total_clauses: int
+    risky_clauses: int
+
+
+@router.get("/analyses", response_model=list[AnalysisSummary])
+async def list_analyses():
+    """저장된 모든 분석 결과의 요약을 최신순으로 반환."""
+    results_dir = Path(settings.results_dir)
+    if not results_dir.exists():
+        return []
+
+    summaries: list[AnalysisSummary] = []
+    for path in results_dir.glob("*.json"):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            created_at = data.get("created_at") or datetime.fromtimestamp(
+                path.stat().st_mtime, tz=timezone.utc
+            ).isoformat(timespec="seconds")
+            summaries.append(
+                AnalysisSummary(
+                    id=data.get("id", path.stem),
+                    filename=data.get("filename", path.stem),
+                    contract_type=data.get("contract_type"),
+                    created_at=created_at,
+                    total_clauses=int(data.get("total_clauses", 0) or 0),
+                    risky_clauses=int(data.get("risky_clauses", 0) or 0),
+                )
+            )
+        except Exception as e:
+            # 단일 파일 파싱 실패가 전체 목록 조회를 중단시키지 않도록 건너뜀
+            logger.warning(f"분석 이력 파싱 실패 ({path.name}): {e}")
+
+    summaries.sort(key=lambda s: s.created_at, reverse=True)
+    return summaries
+
+
 @router.get("/analyses/{analysis_id}", response_model=AnalysisResponse)
 async def get_analysis(analysis_id: str):
     result = _load_result(analysis_id)
     return AnalysisResponse(status="completed", result=result)
+
+
+@router.delete("/analyses/{analysis_id}", status_code=204)
+async def delete_analysis(analysis_id: str):
+    """분석 결과 JSON 파일을 삭제."""
+    _validate_analysis_id(analysis_id)
+    target = _result_path(analysis_id)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="분석 결과를 찾을 수 없습니다.")
+    try:
+        target.unlink()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"삭제 실패: {e}")
+    return None
 
 
 class ClauseOverrideUpdate(BaseModel):
