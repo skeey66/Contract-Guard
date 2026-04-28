@@ -747,9 +747,25 @@ export default function ResultPage() {
   const splitLayoutRef = useRef(null);
 
   useEffect(() => {
-    if (result || !routeAnalysisId) return;
+    if (!routeAnalysisId) return;
+
+    // URL의 id가 현재 로드된 결과와 같으면 재fetch 불필요
+    if (result && result.id === routeAnalysisId) return;
+
+    // 업로드 직후처럼 location.state에 매칭 결과가 프리로드되어 있으면 즉시 반영
+    const preloaded = location.state?.result;
+    if (preloaded?.id === routeAnalysisId) {
+      setResult(preloaded);
+      setSelectedIdx(null);
+      setLoadError(null);
+      return;
+    }
+
+    // 서로 다른 분석으로 전환 — 이전 상태를 초기화하고 서버에서 새로 가져온다
     let cancelled = false;
     setLoading(true);
+    setLoadError(null);
+    setSelectedIdx(null);
     fetchAnalysis(routeAnalysisId)
       .then((data) => {
         if (cancelled) return;
@@ -765,7 +781,9 @@ export default function ResultPage() {
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [routeAnalysisId, result]);
+    // routeAnalysisId가 바뀔 때만 재평가 — result/location.state를 deps에 넣으면 루프 위험이 있다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeAnalysisId]);
 
   const orderedClauses = useMemo(
     () => (result ? [...result.clause_analyses].sort((a, b) => a.clause_index - b.clause_index) : []),

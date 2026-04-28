@@ -33,6 +33,17 @@ export async function fetchAnalysis(analysisId) {
   return response.data;
 }
 
+// 사이드바 이력 목록 — 최신순 AnalysisSummary[] 반환
+export async function listAnalyses() {
+  const response = await api.get("/api/analyses");
+  return response.data;
+}
+
+// 사이드바에서 분석 항목 삭제
+export async function deleteAnalysis(analysisId) {
+  await api.delete(`/api/analyses/${encodeURIComponent(analysisId)}`);
+}
+
 // 위험 조항에 대해 사용자가 직접 입력한 수정안을 저장(또는 제거)
 // text가 null/공백이면 사용자 수정안을 제거하여 권고안으로 회귀
 export async function updateClauseOverride(analysisId, clauseIndex, text) {
