@@ -77,16 +77,22 @@ async def run_analysis(
     return analysis_result
 
 
-# source 분류 — 홈 화면 KB 카드와 동일한 분류 체계
+# source 분류 — 홈 화면 KB 카드와 동일한 분류 체계 (4분할)
 _JUDGMENT_SOURCES = {"precedent_kr", "aihub_판결문", "판례/실무"}
-_CLAUSE_SOURCES = {"aihub_약관", "약관규제법/판례", "실무"}
+_SAFE_CLAUSE_SOURCES = {"safe_clause", "실무"}
+_UNFAIR_CLAUSE_SOURCES = {"unfair_clause"}
+# "약관규제법/판례"는 약관규제법 본문이므로 law로 집계
 
 
 def _categorize_source(source: str) -> str:
-    """metadata.source를 dashboard 카테고리(law/judgment/clause)로 매핑."""
+    """metadata.source를 dashboard 카테고리로 매핑.
+
+    내부 retrieval 카테고리(safe_clause/unfair_clause)는 프론트엔드 탭 구조와의
+    하위 호환을 위해 모두 'clause'로 합산한다. 프론트는 source/text prefix로 구분 가능.
+    """
     if source in _JUDGMENT_SOURCES:
         return "judgment"
-    if source in _CLAUSE_SOURCES:
+    if source in _SAFE_CLAUSE_SOURCES or source in _UNFAIR_CLAUSE_SOURCES:
         return "clause"
     return "law"
 

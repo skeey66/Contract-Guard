@@ -7,8 +7,8 @@ class ReferenceItem(BaseModel):
     카테고리·출처 메타데이터를 보존하여 프론트에서 탭 분류·중복 제거에 사용한다.
     """
     text: str
-    source: str  # ex) "민법", "주택임대차보호법", "precedent_kr", "aihub_약관" 등
-    category: str  # "law" | "judgment" | "clause"
+    source: str  # ex) "민법", "주택임대차보호법", "precedent_kr", "safe_clause", "unfair_clause" 등
+    category: str  # "law" | "judgment" | "clause" — 프론트엔드 탭과 호환되는 3분류 (safe/unfair 약관은 'clause'로 합산)
     similarity: float
     article: str | None = None
 

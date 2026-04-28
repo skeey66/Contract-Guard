@@ -15,17 +15,22 @@ RRF_K = 60
 # 검색 결과에 항상 노출되도록 보장한다 (stratified 보장과 이중 안전장치).
 LAW_BOOST = 3.0
 
-# [약관-불리] 라벨이 본 계약 조항과 표면적으로 유사할 때, LLM이 "이 조항은 약관-불리
-# 사례와 비슷하다 = 위험"이라 격상하는 false-positive 패턴을 약화하기 위한 점수 페널티.
-# 법률·판례가 함께 retrieve되면 약관은 보조 자료로 위치시킨다.
+# 표준약관(safe_clause)에 대한 부스트 — 표준약관 사례에 부합하면 안전 시그널이므로
+# law보다는 약하지만 일반 retrieval 점수보다는 우선시한다.
+SAFE_CLAUSE_BOOST = 1.5
+
+# unfair_clause(분리 후 명확한 불공정 약관 라벨)는 표면 유사도로 false-positive 위험이
+# 있어 페널티 유지. 법률·판례·표준약관이 함께 retrieve되면 보조 자료로 위치시킨다.
 CLAUSE_PENALTY = 0.6
 
 # Stratified retrieval — 카테고리별 강제 보장 개수
 # 합계가 settings.retrieval_top_k(=5)와 일치해야 한다.
+# 우선순위: 법률 → 표준약관 → 판례 → 불공정약관 (사용자 의도: 법률·표준약관 위주, 판례는 회색지대 해석)
 STRATIFIED_QUOTA = {
-    "law": 2,        # 법률 본문 (반드시 2개)
-    "judgment": 2,   # 판례·판결문
-    "clause": 1,     # 약관 사례 (보조)
+    "law": 2,            # 법률 본문 (강행규정 — 반드시 2개)
+    "safe_clause": 1,    # 표준·안전 약관 (부합 시 안전 시그널)
+    "judgment": 1,       # 판례·판결문 (회색지대 해석)
+    "unfair_clause": 1,  # 불공정 약관 사례 (위험 시그널, 보조)
 }
 
 # 1차 retrieval 풀 크기 — 카테고리별 후보를 충분히 확보하기 위해 top_k의 N배로 가져온다.
@@ -34,8 +39,12 @@ INITIAL_POOL_K = 20
 
 
 # ─────────────────────────────────────────────
-# 카테고리 매핑 — metadata.source를 추상 카테고리(law/judgment/clause/other)로 변환
-# (BUILTIN_KB의 개별 법률명도 모두 law 카테고리로 통합)
+# 카테고리 매핑 — metadata.source를 추상 카테고리로 변환
+#   law            : 법률 본문·강행규정 (BUILTIN_KB 개별 법률명도 모두 통합)
+#   safe_clause    : 표준·안전 약관 (AI Hub dvAntageous=1, 실무 표준 사례)
+#   judgment       : 판례·판결문
+#   unfair_clause  : 불공정 약관 사례 (AI Hub dvAntageous=2)
+#   other          : 미매핑
 # ─────────────────────────────────────────────
 _LAW_SOURCES = {
     "law",
@@ -51,7 +60,8 @@ _LAW_SOURCES = {
     "약관규제법/판례",  # 약관규제법 본문은 법률 카테고리로 취급
 }
 _JUDGMENT_SOURCES = {"precedent_kr", "aihub_판결문", "판례/실무"}
-_CLAUSE_SOURCES = {"aihub_약관", "실무"}
+_SAFE_CLAUSE_SOURCES = {"safe_clause", "실무"}  # AI Hub 유리 약관 + BUILTIN 실무 표준
+_UNFAIR_CLAUSE_SOURCES = {"unfair_clause"}  # AI Hub 불리 약관 (분리 후 명확 라벨)
 
 
 def _categorize(entry: dict) -> str:
@@ -59,10 +69,12 @@ def _categorize(entry: dict) -> str:
     src = (entry.get("metadata") or {}).get("source", "")
     if src in _LAW_SOURCES:
         return "law"
+    if src in _SAFE_CLAUSE_SOURCES:
+        return "safe_clause"
     if src in _JUDGMENT_SOURCES:
         return "judgment"
-    if src in _CLAUSE_SOURCES:
-        return "clause"
+    if src in _UNFAIR_CLAUSE_SOURCES:
+        return "unfair_clause"
     return "other"
 
 
@@ -137,11 +149,12 @@ def _rrf_combine_stratified(
 
     절차:
       1. 벡터/BM25 순위로 RRF 점수 합산
-      2. 카테고리별 점수 조정 (law 부스트, clause 페널티)
+      2. 카테고리별 점수 조정 (law 부스트, safe_clause 부스트, unfair_clause 페널티)
       3. 카테고리별 풀 분리·정렬
       4. STRATIFIED_QUOTA에 따라 우선 선택 (본문 dedup 적용)
       5. 카테고리 quota 미달 시 잔여 풀에서 점수 높은 순으로 보충
-      6. 출력 순서: law → judgment → clause → other (LLM이 법률 먼저 보게)
+      6. 출력 순서: law → safe_clause → judgment → unfair_clause → other
+         (LLM이 법률·표준약관을 먼저 읽고 마지막에 위험 사례 참조)
     """
     scores: dict[str, float] = {}
     entries: dict[str, dict] = {}
@@ -161,14 +174,17 @@ def _rrf_combine_stratified(
         cat = _categorize(entry)
         if cat == "law":
             scores[doc_id] *= LAW_BOOST
-        elif cat == "clause":
+        elif cat == "safe_clause":
+            scores[doc_id] *= SAFE_CLAUSE_BOOST
+        elif cat == "unfair_clause":
             scores[doc_id] *= CLAUSE_PENALTY
 
     # 3. 카테고리별 풀 분리·정렬
     pools: dict[str, list[tuple[float, str]]] = {
         "law": [],
+        "safe_clause": [],
         "judgment": [],
-        "clause": [],
+        "unfair_clause": [],
         "other": [],
     }
     for doc_id in scores:
@@ -182,7 +198,7 @@ def _rrf_combine_stratified(
     seen_dedup_keys: set[str] = set()
     quota_remaining = dict(STRATIFIED_QUOTA)
 
-    for cat in ("law", "judgment", "clause"):
+    for cat in ("law", "safe_clause", "judgment", "unfair_clause"):
         for score, doc_id in pools.get(cat, []):
             if quota_remaining[cat] <= 0:
                 break
@@ -212,10 +228,10 @@ def _rrf_combine_stratified(
             selected_ids.append(doc_id)
             remaining -= 1
 
-    # 6. 출력 순서: law → judgment → clause → other (LLM이 법률을 먼저 읽게)
-    cat_order = {"law": 0, "judgment": 1, "clause": 2, "other": 3}
+    # 6. 출력 순서: law → safe_clause → judgment → unfair_clause → other
+    cat_order = {"law": 0, "safe_clause": 1, "judgment": 2, "unfair_clause": 3, "other": 4}
     selected_with_meta = [
-        (cat_order.get(_categorize(entries[doc_id]), 4), -scores[doc_id], doc_id)
+        (cat_order.get(_categorize(entries[doc_id]), 5), -scores[doc_id], doc_id)
         for doc_id in selected_ids
     ]
     selected_with_meta.sort()
@@ -236,8 +252,8 @@ def retrieve_similar(
 ) -> list[dict]:
     """BM25 + 벡터 하이브리드 검색 후 stratified RRF로 결합.
 
-    카테고리별 보장 quota(law 2, judgment 2, clause 1)에 따라
-    법률 본문이 항상 top-K에 노출되도록 한다.
+    카테고리별 보장 quota(law 2, safe_clause 1, judgment 1, unfair_clause 1)에 따라
+    법률 본문과 표준약관이 항상 top-K에 노출되도록 한다.
     """
     k = top_k or settings.retrieval_top_k
 
