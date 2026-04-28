@@ -62,14 +62,60 @@ def get_all_builtin_data() -> list[dict]:
     return items
 
 
-LEASE_KEYWORDS = ["임대", "임차", "보증금", "차임", "월세", "전세", "임대차", "주택임대"]
-SALES_KEYWORDS = ["매매", "매도", "매수", "소유권이전", "잔금", "계약금"]
+# 5개 contract_type별 판결문/약관 분류 키워드 — precedent-kr 분류기와 동기화
+# (precedent-kr 파일은 sections, AI Hub 판결문은 caseNm+법령+facts+dcss를 결합한 문자열을 입력으로 사용)
+JUDGMENT_KEYWORDS: dict[str, list[str]] = {
+    "lease": ["임대", "임차", "보증금", "차임", "월세", "전세", "임대차", "주택임대"],
+    "sales": ["매매", "매도", "매수", "소유권이전", "잔금", "계약금"],
+    "employment": ["근로기준", "임금", "퇴직금", "부당해고", "근로계약", "통상임금", "연차", "산업재해", "노동조합"],
+    "service": ["도급", "수급인", "공사대금", "하도급", "용역계약", "기성고", "공사도급", "위탁계약"],
+    "loan": ["소비대차", "대여금", "차용금", "이자제한", "보증채무", "근보증", "기한이익"],
+}
+
+# 하위 호환용 — 기존 호출부가 있을 수 있음
+LEASE_KEYWORDS = JUDGMENT_KEYWORDS["lease"]
+SALES_KEYWORDS = JUDGMENT_KEYWORDS["sales"]
 
 # 파일명 키워드 → (contract_type, topic)
+# AI Hub 약관 데이터셋은 40+ 카테고리가 있고, 5개 도메인에 의미적으로 매핑되는 항목만 선별
+# - lease: 임대차 (538 파일)
+# - sales: 매매계약 (304), 분양계약 (408)
+# - service: 공급/가맹/운송/위탁 (~1,800)
+# - loan: 보증/은행여신/신용카드/전자금융 (~1,000)
+# - employment: AI Hub 약관 데이터셋에 근로계약 카테고리가 없어 매핑 불가
+# 보험/게임/교육 등은 도메인 모호성으로 제외
 CLAUSE_FILE_MAPPING = {
+    # lease
     "임대차": ("lease", "임대차_약관"),
+    # sales
     "매매계약": ("sales", "매매_약관"),
+    "분양계약": ("sales", "분양_약관"),
+    # service (용역·도급 — 운송/위탁/공급/가맹 포함)
+    "공급계약": ("service", "공급_약관"),
+    "가맹계약": ("service", "가맹_약관"),
+    "택배": ("service", "운송_약관"),
+    "화물운송": ("service", "운송_약관"),
+    "여객운송": ("service", "운송_약관"),
+    "위탁": ("service", "위탁_약관"),
+    # loan (금융·금전대차)
+    "보증": ("loan", "보증_약관"),
+    "은행여신": ("loan", "여신_약관"),
+    "신용카드": ("loan", "신용카드_약관"),
+    "전자금융": ("loan", "전자금융_약관"),
 }
+
+
+def _classify_judgment(text: str) -> str | None:
+    """판결문 본문에서 가장 점수 높은 도메인을 반환. 모두 0이면 None.
+
+    precedent-kr의 _classify_precedent와 동일한 카운트 기반 다수결 로직.
+    최소 2회 매칭은 돼야 도메인 확정 — 노이즈 단어 1개로 잘못 분류되는 것 방지.
+    """
+    scores: dict[str, int] = {}
+    for ct, kws in JUDGMENT_KEYWORDS.items():
+        scores[ct] = sum(text.count(kw) for kw in kws)
+    best = max(scores, key=scores.get)
+    return best if scores[best] >= 2 else None
 
 
 def _is_lease_related(text: str) -> bool:
@@ -129,14 +175,26 @@ def _load_clause_data(data_path: Path) -> list[dict]:
         laws = data.get("relateLaword", [])
         law_text = "\n".join(laws) if isinstance(laws, list) else str(laws)
 
-        # 유불리 판단: "1"=유리, "2"=불리
+        # 유불리 판단: "1"=유리(표준/안전 약관), "2"=불리(불공정 약관)
+        # source를 분리하여 retrieval 시 카테고리·역할을 다르게 취급한다
+        # - safe_clause: 부합하면 안전 시그널 (표준약관 비교 기준)
+        # - unfair_clause: 유사하면 위험 시그널 (불공정 약관 사례)
         dv = data.get("dvAntageous", "")
-        advantage = "불리" if str(dv) == "2" else "유리"
+        if str(dv) == "2":
+            advantage = "불리"
+            source_label = "unfair_clause"
+            text_prefix = "[약관-불공정]"
+            id_prefix = "unfair-clause"
+        else:
+            advantage = "유리"
+            source_label = "safe_clause"
+            text_prefix = "[표준-안전]"
+            id_prefix = "safe-clause"
 
         for idx, article in enumerate(articles):
             if len(article) < 10:
                 continue
-            combined = f"[약관-{advantage}] {article}"
+            combined = f"{text_prefix} {article}"
             if basis_text.strip():
                 combined += f"\n판단근거: {basis_text[:300]}"
             if law_text.strip():
@@ -144,10 +202,10 @@ def _load_clause_data(data_path: Path) -> list[dict]:
 
             text_body = combined[:1500]
             items.append({
-                "id": _content_id("clause", text_body),
+                "id": _content_id(id_prefix, text_body),
                 "text": text_body,
                 "metadata": {
-                    "source": "aihub_약관",
+                    "source": source_label,
                     "filename": nfc_name,
                     "topic": topic,
                     "advantage": advantage,
@@ -160,17 +218,31 @@ def _load_clause_data(data_path: Path) -> list[dict]:
 
 
 def _load_judgment_data(data_path: Path) -> list[dict]:
-    """판결문 라벨링데이터(JSON)에서 임대차/매매 관련 민사 판결문을 파싱.
+    """판결문 라벨링데이터(JSON)에서 5도메인 관련 민사·행정 판결문을 파싱.
+
+    분류 전략: 5개 contract_type 키워드 dict 기반 다수결로 도메인 결정.
+    - 민사: lease/sales/loan/service 분쟁 다수
+    - 행정: employment(부당해고·산재·노동위) 분쟁 다수 — 형사는 계약 분석과 직접성 낮아 제외
+    - 매칭 점수 < 2면 분류 보류 (노이즈 단어 1개로 잘못 분류 방지)
 
     청크 전략: 하나의 판결문을 (판단, 기초사실) 두 섹션으로 분리 인덱싱한다.
     - 판단(dcss)은 핵심 정보이므로 1500자 청크 + 150자 오버랩으로 분할
     - 기초사실(facts)은 맥락 참조용이므로 최대 1500자 단일 문서
-    기존 800자 절단으로 핵심 판단 이유가 잘리던 문제를 해결한다.
     """
     items = []
+    # 형사는 계약 분석과 직접성 낮아 제외, 민사·행정만 인덱싱
+    TARGET_PATH_KEYWORDS = ("민사", "행정")
+    TOPIC_LABEL = {
+        "lease": "임대차_판결",
+        "sales": "매매_판결",
+        "employment": "근로_판결",
+        "service": "용역_판결",
+        "loan": "금전대차_판결",
+    }
+
     for json_file in data_path.rglob("*.json"):
         nfc_path = _normalize_filename(str(json_file))
-        if "민사" not in nfc_path:
+        if not any(kw in nfc_path for kw in TARGET_PATH_KEYWORDS):
             continue
 
         try:
@@ -205,12 +277,10 @@ def _load_judgment_data(data_path: Path) -> list[dict]:
             dcss_text = str(dcss_raw)
 
         full_filter = f"{case_nm} {law_str} {facts_text} {dcss_text}"
-        if _is_lease_related(full_filter):
-            contract_type, topic = "lease", "임대차_판결"
-        elif _is_sales_related(full_filter):
-            contract_type, topic = "sales", "매매_판결"
-        else:
+        contract_type = _classify_judgment(full_filter)
+        if contract_type is None:
             continue
+        topic = TOPIC_LABEL[contract_type]
 
         case_no = info.get("caseNo", "")
         court = info.get("courtNm", "")
@@ -669,11 +739,12 @@ def build_knowledge_base(
       t = _PREFIX_RE.sub("", text, count=1)
       return _WS_RE.sub(" ", t).strip().lower()
 
-    # 우선순위: 내장 > 법률(law) > 판례(precedent_kr) > aihub — 먼저 들어온 항목 유지
+    # 우선순위: 내장 > 법률(law) > 판례(precedent_kr) > aihub 약관/판결 — 먼저 들어온 항목 유지
     SOURCE_PRIORITY = {"law": 1, "precedent_kr": 2}
+    AIHUB_LIKE = {"aihub_판결문", "safe_clause", "unfair_clause"}  # AI Hub 출처 (분리 후 신규 라벨 포함)
     def _priority(item: dict) -> int:
       src = item.get("metadata", {}).get("source", "")
-      if src.startswith("aihub"): return 3
+      if src.startswith("aihub") or src in AIHUB_LIKE: return 3
       if src in SOURCE_PRIORITY: return SOURCE_PRIORITY[src]
       return 0  # 내장 KB
     items.sort(key=_priority)
