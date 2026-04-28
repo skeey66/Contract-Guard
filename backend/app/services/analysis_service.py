@@ -1,5 +1,6 @@
 import logging
 import uuid
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -56,6 +57,8 @@ async def run_analysis(
         risky_clauses=len(risky),
         clause_analyses=clause_analyses,
         summary=summary,
+        contract_type=contract_type,
+        created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
 
     # 분석 결과를 디스크에 영속화 — export/재조회 엔드포인트가 사용

@@ -43,6 +43,9 @@ class AnalysisResult(BaseModel):
     risky_clauses: int
     clause_analyses: list[ClauseAnalysis]
     summary: str = ""
+    # 사이드바 이력 표시에 사용. 기존 저장분과의 하위 호환을 위해 Optional.
+    contract_type: str | None = None  # "lease" | "sales" | "employment" | ...
+    created_at: str | None = None  # ISO8601 UTC. 누락 시 파일 mtime으로 폴백.
 
 
 class AnalysisResponse(BaseModel):

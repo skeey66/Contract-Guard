@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import FileUploader from "../components/FileUploader";
 import { uploadDocument, fetchKbStatus } from "../api/client";
+import { useAnalyses } from "../context/AnalysesContext";
 
 // target 값까지 0에서 ease-out으로 카운트업 애니메이션. requestAnimationFrame 기반.
 function useCountUp(target, durationMs = 1600) {
@@ -120,6 +121,7 @@ export default function UploadPage() {
   const [progress, setProgress] = useState("");
   const [kbStats, setKbStats] = useState({ total: 0, laws: 0, judgments: 0, clauses: 0 });
   const navigate = useNavigate();
+  const { refresh: refreshAnalyses } = useAnalyses();
 
   // KB 통계 1회 fetch — 실패해도 카드는 0으로 표시되어 페이지가 망가지지는 않음
   useEffect(() => {
@@ -153,6 +155,8 @@ export default function UploadPage() {
       if (data.status === "completed" && data.result) {
         // URL에 analysisId를 포함시켜 새로고침/직접접근 복원이 가능하도록 한다
         const id = data.result.id;
+        // 사이드바 이력이 즉시 최신화되도록 목록을 새로 불러온다 (실패해도 이동은 그대로 진행)
+        refreshAnalyses().catch(() => {});
         navigate(`/result/${encodeURIComponent(id)}`, { state: { result: data.result } });
       } else {
         setError(data.error || "분석에 실패했습니다.");
