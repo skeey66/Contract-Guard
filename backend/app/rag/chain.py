@@ -179,7 +179,51 @@ def _retrieve_for_clause(clause: Clause, contract_type: str) -> list[dict]:
                 continue
             seen_ids.add(ref_id)
             merged.append(ref)
-    return merged
+
+    # 다중 항 merge 후 stratified 재선택 — 단일 retrieve_similar의 quota는
+    # 항별 호출에서만 보장되므로, merged 후 격차가 큰 표면 키워드 매칭(법률 5개+)이
+    # 핵심 패턴 매칭(unfair_clause 1개, sim은 낮지만 의미적으로 정답)을 누르는 문제를 막는다.
+    def _cat(r: dict) -> str:
+        src = (r.get("metadata") or {}).get("source", "")
+        if src in ("law",) or src.startswith("aihub") is False and src in (
+            "민법", "주택임대차보호법", "근로기준법", "약관규제법/판례",
+            "상가건물임대차보호법", "근로자퇴직급여보장법", "최저임금법",
+        ):
+            return "law"
+        if src == "precedent_kr" or src == "aihub_판결문" or src == "판례/실무":
+            return "judgment"
+        if src in ("safe_clause", "실무"):
+            return "safe_clause"
+        if src == "unfair_clause":
+            return "unfair_clause"
+        return "law" if src else "other"
+
+    by_cat: dict[str, list[dict]] = {"law": [], "safe_clause": [], "judgment": [], "unfair_clause": [], "other": []}
+    for r in merged:
+        by_cat[_cat(r)].append(r)
+    for cat in by_cat:
+        by_cat[cat].sort(key=lambda r: r.get("similarity", 0) or 0, reverse=True)
+
+    # 카테고리별 보장 quota: law 3, safe 2, judgment 2, unfair 1 (총 8 reserved, top_k와 정합)
+    quota = {"law": 3, "safe_clause": 2, "judgment": 2, "unfair_clause": 1}
+    selected: list[dict] = []
+    selected_ids: set[str] = set()
+    for cat, n in quota.items():
+        for r in by_cat[cat][:n]:
+            rid = r.get("id") or r.get("text", "")[:80]
+            if rid in selected_ids:
+                continue
+            selected.append(r)
+            selected_ids.add(rid)
+    # 잔여 슬롯은 전체 유사도 순으로 보충 (사용자에게 노출되는 references_detail용)
+    for r in sorted(merged, key=lambda x: x.get("similarity", 0) or 0, reverse=True):
+        rid = r.get("id") or r.get("text", "")[:80]
+        if rid in selected_ids:
+            continue
+        selected.append(r)
+        selected_ids.add(rid)
+
+    return selected
 
 
 # 임대차 sub-type별 적용 법령 hint — 분석 프롬프트의 reference_context 앞에 prepend

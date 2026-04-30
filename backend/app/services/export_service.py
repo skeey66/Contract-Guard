@@ -1,6 +1,7 @@
 """분석 결과를 기반으로 수정안이 반영된 계약서를 DOCX/PDF/HWPX 형식으로 생성.
 
-원문 조항 + (위험 조항인 경우) 수정안을 함께 출력하여, 사용자가 차이를 확인할 수 있게 한다.
+위험 조항(high/medium)에 수정안이 있으면 그것을, 없으면 원문을 그대로 사용해
+바로 사용 가능한 깨끗한 계약서 형태로 출력한다 (위험도 라벨·원문 비교 표기 없음).
 """
 
 import io
@@ -79,6 +80,19 @@ def _final_rewrite(ca: ClauseAnalysis) -> tuple[str | None, str]:
     return None, ""
 
 
+def _final_clause_text(ca: ClauseAnalysis) -> str:
+    """최종 계약서에 들어갈 조항 본문을 반환.
+
+    위험 조항(high/medium)에 수정안이 있으면 수정안을, 없으면 원문을 그대로 사용한다.
+    안전·저위험 조항은 항상 원문 유지.
+    """
+    if _is_risky(ca):
+        rewrite_text, _ = _final_rewrite(ca)
+        if rewrite_text:
+            return rewrite_text
+    return ca.clause_content or ""
+
+
 def _risk_label(level: RiskLevel) -> str:
     return {
         RiskLevel.HIGH: "고위험",
@@ -111,9 +125,8 @@ def build_docx(result: AnalysisResult) -> bytes:
     meta.add_run(f"전체 조항 {result.total_clauses}개 / 위험 조항 {result.risky_clauses}개").italic = True
 
     doc.add_paragraph(
-        "본 문서는 AI 분석 결과를 바탕으로, 위험 요소가 식별된 조항에 대해 "
-        "표준약관·관련 법률을 근거로 한 권고 수정안을 함께 표기한 참고용 계약서입니다. "
-        "법적 효력은 없으며, 실제 계약 체결 전 전문가 검토를 권장합니다."
+        "본 문서는 AI 분석 결과를 바탕으로, 위험 요소가 식별된 조항에 권고 수정안을 반영하여 "
+        "재구성한 참고용 계약서입니다. 법적 효력은 없으며, 실제 계약 체결 전 전문가 검토를 권장합니다."
     )
     doc.add_paragraph()
 
@@ -123,38 +136,10 @@ def build_docx(result: AnalysisResult) -> bytes:
         for run in h.runs:
             run.font.name = "맑은 고딕"
 
-        # 위험 표기
-        risk_p = doc.add_paragraph()
-        risk_run = risk_p.add_run(f"[{_risk_label(ca.risk_level)}] ")
-        risk_run.bold = True
-        if ca.risk_level == RiskLevel.HIGH:
-            risk_run.font.color.rgb = RGBColor(0xC0, 0x39, 0x2B)
-        elif ca.risk_level == RiskLevel.MEDIUM:
-            risk_run.font.color.rgb = RGBColor(0xD3, 0x8B, 0x1E)
-        elif ca.risk_level == RiskLevel.LOW:
-            risk_run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
-        else:
-            risk_run.font.color.rgb = RGBColor(0x2E, 0x7D, 0x32)
-        if ca.explanation:
-            risk_p.add_run(ca.explanation)
-
-        # 원문
-        orig_label = doc.add_paragraph()
-        orig_label.add_run("[원문]").bold = True
-        for line in ca.clause_content.splitlines() or [ca.clause_content]:
+        # 본문 — 위험 조항이면 수정안, 아니면 원문
+        final_text = _final_clause_text(ca)
+        for line in final_text.splitlines() or [final_text]:
             doc.add_paragraph(line)
-
-        # 수정안 (사용자 수정안 > LLM 권고안 순서로 1개만 표시)
-        rewrite_text, rewrite_label = _final_rewrite(ca)
-        if _is_risky(ca) and rewrite_text:
-            new_label = doc.add_paragraph()
-            run = new_label.add_run(rewrite_label)
-            run.bold = True
-            run.font.color.rgb = RGBColor(0x1F, 0x4E, 0x8B)
-            for line in rewrite_text.splitlines() or [rewrite_text]:
-                p = doc.add_paragraph(line)
-                for r in p.runs:
-                    r.font.color.rgb = RGBColor(0x1F, 0x4E, 0x8B)
 
         doc.add_paragraph()
 
@@ -234,31 +219,16 @@ def build_pdf(result: AnalysisResult) -> bytes:
     story.append(Paragraph(meta_text, styles["meta"]))
     story.append(Spacer(1, 0.4 * cm))
     story.append(_para(
-        "본 문서는 AI 분석 결과를 바탕으로, 위험 요소가 식별된 조항에 대해 "
-        "표준약관·관련 법률을 근거로 한 권고 수정안을 함께 표기한 참고용 계약서입니다. "
-        "법적 효력은 없으며, 실제 계약 체결 전 전문가 검토를 권장합니다.",
+        "본 문서는 AI 분석 결과를 바탕으로, 위험 요소가 식별된 조항에 권고 수정안을 반영하여 "
+        "재구성한 참고용 계약서입니다. 법적 효력은 없으며, 실제 계약 체결 전 전문가 검토를 권장합니다.",
         styles["body"],
     ))
     story.append(Spacer(1, 0.6 * cm))
 
-    risk_style_map = {
-        RiskLevel.HIGH: styles["high"],
-        RiskLevel.MEDIUM: styles["medium"],
-        RiskLevel.LOW: styles["low"],
-        RiskLevel.SAFE: styles["safe"],
-    }
-
     for ca in result.clause_analyses:
         story.append(_para(f"제{ca.clause_index}조 {ca.clause_title}".strip(), styles["h2"]))
-        risk_line = f"[{_risk_label(ca.risk_level)}] {ca.explanation or ''}"
-        story.append(_para(risk_line, risk_style_map.get(ca.risk_level, styles["body"])))
-        story.append(_para("[원문]", styles["label"]))
-        story.append(_para(ca.clause_content, styles["body"]))
-        rewrite_text, rewrite_label = _final_rewrite(ca)
-        if _is_risky(ca) and rewrite_text:
-            story.append(Spacer(1, 0.2 * cm))
-            story.append(_para(rewrite_label, styles["label"]))
-            story.append(_para(rewrite_text, styles["rewrite"]))
+        final_text = _final_clause_text(ca)
+        story.append(_para(final_text, styles["body"]))
         story.append(Spacer(1, 0.4 * cm))
 
     doc.build(story)
@@ -336,31 +306,16 @@ def _build_hwpx_section(result: AnalysisResult) -> str:
     ))
     body.append(_hwpx_paragraph(""))
     body.append(_hwpx_paragraph(
-        "본 문서는 AI 분석 결과를 바탕으로, 위험 요소가 식별된 조항에 대해 "
-        "표준약관·관련 법률을 근거로 한 권고 수정안을 함께 표기한 참고용 계약서입니다. "
-        "법적 효력은 없으며, 실제 계약 체결 전 전문가 검토를 권장합니다."
+        "본 문서는 AI 분석 결과를 바탕으로, 위험 요소가 식별된 조항에 권고 수정안을 반영하여 "
+        "재구성한 참고용 계약서입니다. 법적 효력은 없으며, 실제 계약 체결 전 전문가 검토를 권장합니다."
     ))
     body.append(_hwpx_paragraph(""))
 
-    color_map = {
-        RiskLevel.HIGH: "C0392B",
-        RiskLevel.MEDIUM: "D38B1E",
-        RiskLevel.LOW: "888888",
-        RiskLevel.SAFE: "2E7D32",
-    }
-
     for ca in result.clause_analyses:
         body.append(_hwpx_paragraph(f"제{ca.clause_index}조 {ca.clause_title}".strip(), bold=True))
-        risk_line = f"[{_risk_label(ca.risk_level)}] {ca.explanation or ''}"
-        body.append(_hwpx_paragraph(risk_line, color=color_map.get(ca.risk_level)))
-        body.append(_hwpx_paragraph("[원문]", bold=True))
-        for line in (ca.clause_content or "").splitlines() or [ca.clause_content or ""]:
+        final_text = _final_clause_text(ca)
+        for line in final_text.splitlines() or [final_text]:
             body.append(_hwpx_paragraph(line))
-        rewrite_text, rewrite_label = _final_rewrite(ca)
-        if _is_risky(ca) and rewrite_text:
-            body.append(_hwpx_paragraph(rewrite_label, bold=True, color="1F4E8B"))
-            for line in rewrite_text.splitlines() or [rewrite_text]:
-                body.append(_hwpx_paragraph(line, color="1F4E8B"))
         body.append(_hwpx_paragraph(""))
 
     section_xml = (

@@ -3,6 +3,7 @@ import re
 
 from backend.app.services import chroma_service
 from backend.app.services import bm25_service
+from backend.app.services import reranker_service
 from backend.app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -140,26 +141,14 @@ def _dedup_key(entry: dict) -> str:
     return _law_article_key(entry) or _content_dedup_key(entry)
 
 
-def _rrf_combine_stratified(
+def _build_rrf_candidates(
     vector_results: list[tuple[str, dict]],
     bm25_results: list[tuple[str, dict]],
-    top_k: int,
-) -> list[dict]:
-    """RRF 결합 + 카테고리별 stratified 선택 + 본문 중복 제거.
-
-    절차:
-      1. 벡터/BM25 순위로 RRF 점수 합산
-      2. 카테고리별 점수 조정 (law 부스트, safe_clause 부스트, unfair_clause 페널티)
-      3. 카테고리별 풀 분리·정렬
-      4. STRATIFIED_QUOTA에 따라 우선 선택 (본문 dedup 적용)
-      5. 카테고리 quota 미달 시 잔여 풀에서 점수 높은 순으로 보충
-      6. 출력 순서: law → safe_clause → judgment → unfair_clause → other
-         (LLM이 법률·표준약관을 먼저 읽고 마지막에 위험 사례 참조)
-    """
+) -> tuple[dict[str, float], dict[str, dict]]:
+    """벡터 + BM25 결과를 RRF 점수로 머지. 점수 dict + entry dict 반환."""
     scores: dict[str, float] = {}
     entries: dict[str, dict] = {}
 
-    # 1. 벡터 + BM25 RRF 점수 합산
     for rank, (doc_id, entry) in enumerate(vector_results):
         scores[doc_id] = scores.get(doc_id, 0) + 1.0 / (RRF_K + rank + 1)
         entries[doc_id] = entry
@@ -169,7 +158,26 @@ def _rrf_combine_stratified(
         if doc_id not in entries:
             entries[doc_id] = entry
 
-    # 2. 카테고리별 점수 조정
+    return scores, entries
+
+
+def _stratified_select(
+    scores: dict[str, float],
+    entries: dict[str, dict],
+    top_k: int,
+) -> list[dict]:
+    """카테고리 부스트 + stratified 선택 + 본문 중복 제거. 점수 출처 무관.
+
+    절차:
+      1. 카테고리별 점수 조정 (law 부스트, safe_clause 부스트, unfair_clause 페널티)
+      2. 카테고리별 풀 분리·정렬
+      3. STRATIFIED_QUOTA에 따라 우선 선택 (본문 dedup 적용)
+      4. 카테고리 quota 미달 시 잔여 풀에서 점수 높은 순으로 보충
+      5. 출력 순서: law → safe_clause → judgment → unfair_clause → other
+         (LLM이 법률·표준약관을 먼저 읽고 마지막에 위험 사례 참조)
+    """
+    # 1. 카테고리별 점수 조정 (원본 dict 변경 방지 — 호출부 재사용 대비)
+    scores = dict(scores)
     for doc_id, entry in entries.items():
         cat = _categorize(entry)
         if cat == "law":
@@ -179,7 +187,7 @@ def _rrf_combine_stratified(
         elif cat == "unfair_clause":
             scores[doc_id] *= CLAUSE_PENALTY
 
-    # 3. 카테고리별 풀 분리·정렬
+    # 2. 카테고리별 풀 분리·정렬
     pools: dict[str, list[tuple[float, str]]] = {
         "law": [],
         "safe_clause": [],
@@ -193,7 +201,7 @@ def _rrf_combine_stratified(
     for cat in pools:
         pools[cat].sort(reverse=True)
 
-    # 4. STRATIFIED_QUOTA 우선 선택 + 본문 dedup
+    # 3. STRATIFIED_QUOTA 우선 선택 + 본문 dedup
     selected_ids: list[str] = []
     seen_dedup_keys: set[str] = set()
     quota_remaining = dict(STRATIFIED_QUOTA)
@@ -209,7 +217,7 @@ def _rrf_combine_stratified(
             selected_ids.append(doc_id)
             quota_remaining[cat] -= 1
 
-    # 5. quota 미달 시 (해당 카테고리 후보 부족) 나머지 점수 높은 항목으로 보충
+    # 4. quota 미달 시 (해당 카테고리 후보 부족) 나머지 점수 높은 항목으로 보충
     remaining = top_k - len(selected_ids)
     if remaining > 0:
         all_remaining = [
@@ -228,7 +236,7 @@ def _rrf_combine_stratified(
             selected_ids.append(doc_id)
             remaining -= 1
 
-    # 6. 출력 순서: law → safe_clause → judgment → unfair_clause → other
+    # 5. 출력 순서: law → safe_clause → judgment → unfair_clause → other
     cat_order = {"law": 0, "safe_clause": 1, "judgment": 2, "unfair_clause": 3, "other": 4}
     selected_with_meta = [
         (cat_order.get(_categorize(entries[doc_id]), 5), -scores[doc_id], doc_id)
@@ -243,6 +251,24 @@ def _rrf_combine_stratified(
         results.append(entry)
 
     return results
+
+
+def _apply_reranker(
+    query: str,
+    scores: dict[str, float],
+    entries: dict[str, dict],
+) -> dict[str, float]:
+    """Cross-encoder로 entries 전체를 재정렬한 점수 dict 반환.
+
+    1차 RRF 점수는 무시하고 reranker 점수(0~1)로 대체한다. 카테고리 부스트는
+    이후 _stratified_select에서 적용되므로 여기서는 순수 관련성만 산출한다.
+    """
+    if not entries:
+        return scores
+    doc_ids = list(entries.keys())
+    passages = [entries[doc_id]["text"] for doc_id in doc_ids]
+    rerank_scores = reranker_service.rerank(query, passages)
+    return {doc_id: rerank_scores[i] for i, doc_id in enumerate(doc_ids)}
 
 
 def retrieve_similar(
@@ -300,9 +326,16 @@ def retrieve_similar(
     if not vector_results:
         logger.debug("벡터 검색 결과 없음, BM25 결과만 사용")
 
-    combined = _rrf_combine_stratified(vector_results, bm25_results, top_k=k)
+    scores, entries = _build_rrf_candidates(vector_results, bm25_results)
+
+    if settings.reranker_enabled:
+        scores = _apply_reranker(text, scores, entries)
+
+    combined = _stratified_select(scores, entries, top_k=k)
     logger.debug(
         f"하이브리드 검색 완료: 벡터 {len(vector_results)}건, "
-        f"BM25 {len(bm25_results)}건 → stratified {len(combined)}건"
+        f"BM25 {len(bm25_results)}건, "
+        f"reranker={'on' if settings.reranker_enabled else 'off'} "
+        f"→ stratified {len(combined)}건"
     )
     return combined

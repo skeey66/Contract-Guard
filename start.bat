@@ -5,10 +5,11 @@ cd /d "%~dp0"
 
 echo === K^&H2 시작 ===
 
-:: 1. Ollama 시작
+:: 1. Ollama 시작 — bge-m3 + reranker가 VRAM 차지하므로 NUM_PARALLEL=1 유지 (GPU swap 방지)
 echo [1/3] Ollama 시작...
 taskkill /f /im ollama.exe >nul 2>&1
 timeout /t 1 /nobreak >nul
+set OLLAMA_NUM_PARALLEL=1
 start /B "" ollama serve >nul 2>&1
 timeout /t 3 /nobreak >nul
 curl -s http://localhost:11434/api/tags >nul 2>&1 && (echo   -^> Ollama OK) || (echo   -^> Ollama 실패)

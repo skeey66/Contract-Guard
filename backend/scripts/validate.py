@@ -84,20 +84,20 @@ def prediction_matches(risk_level: str, ground_truth: str) -> bool:
         return risk_level in ("high", "medium")
 
 
-async def run_validation(items: list[dict]) -> dict:
-    """검증 실행."""
-    total = len(items)
-    correct = 0
-    results = []
+# 동시 LLM 호출 슬롯 — Ollama NUM_PARALLEL=1 환경에서 1로 유지하면 EXAONE이 full GPU 사용
+# (병렬로 올리면 KV cache 압박으로 모델이 CPU swap → 더 느려짐)
+VALIDATION_CONCURRENCY = 1
 
-    # 오판 분석용
-    false_safe = []  # 불리인데 safe/low로 판정 (놓친 위험)
-    false_risky = []  # 유리인데 high/medium으로 판정 (거짓 경보)
 
-    print(f"\n검증 시작: 총 {total}건")
-    print("=" * 60)
-
-    for i, item in enumerate(items):
+async def _process_item(
+    idx: int,
+    item: dict,
+    total: int,
+    semaphore: asyncio.Semaphore,
+    counter: list[int],
+) -> dict:
+    """개별 항목 분석 — Semaphore로 동시 LLM 호출 제한."""
+    async with semaphore:
         clause = Clause(
             index=0,
             title=f"약관 조항 ({item['filename'][:30]})",
@@ -107,47 +107,83 @@ async def run_validation(items: list[dict]) -> dict:
         try:
             result = await analyze_all_clauses([clause])
             parsed_list = result["parsed_list"]
-
             if parsed_list:
                 risk_level = parsed_list[0].get("risk_level", "safe").lower().strip()
                 explanation = parsed_list[0].get("explanation", "")
             else:
                 risk_level = "safe"
                 explanation = "파싱 실패"
-
         except Exception as e:
             risk_level = "error"
             explanation = str(e)
 
         gt = item["ground_truth"]
         match = prediction_matches(risk_level, gt)
-        if match:
-            correct += 1
 
+        # 완료 순서로 진행도 출력 (병렬이라 idx 순 아님)
+        counter[0] += 1
         icon = "✅" if match else "❌"
-        print(f"[{i+1}/{total}] {icon} 정답={gt:5s} 판정={risk_level:6s} | {item['filename'][:40]}")
+        print(
+            f"[{counter[0]}/{total}] {icon} 정답={gt:5s} 판정={risk_level:6s} | {item['filename'][:40]}",
+            flush=True,
+        )
 
-        if not match:
-            if gt == "risky" and risk_level in ("safe", "low"):
-                false_safe.append({
-                    "filename": item["filename"],
-                    "risk_level": risk_level,
-                    "text": item["clause_text"][:200],
-                    "basis": item["basis"],
-                })
-            elif gt == "safe" and risk_level in ("high", "medium"):
-                false_risky.append({
-                    "filename": item["filename"],
-                    "risk_level": risk_level,
-                    "text": item["clause_text"][:200],
-                })
-
-        results.append({
+        return {
+            "idx": idx,
             "filename": item["filename"],
             "ground_truth": gt,
             "prediction": risk_level,
             "match": match,
-            "explanation": explanation[:100],
+            "explanation": explanation,
+            "clause_text": item["clause_text"],
+            "basis": item.get("basis", []),
+        }
+
+
+async def run_validation(items: list[dict]) -> dict:
+    """검증 실행 — Semaphore 병렬 처리로 LLM 호출 동시 발사."""
+    total = len(items)
+
+    print(f"\n검증 시작: 총 {total}건 (동시성 {VALIDATION_CONCURRENCY})")
+    print("=" * 60)
+
+    semaphore = asyncio.Semaphore(VALIDATION_CONCURRENCY)
+    counter = [0]
+    raw_results = await asyncio.gather(
+        *[_process_item(i, item, total, semaphore, counter) for i, item in enumerate(items)]
+    )
+
+    # 원래 순서로 정렬 (병렬이라 도착 순서가 idx와 다름)
+    raw_results.sort(key=lambda r: r["idx"])
+
+    correct = 0
+    false_safe: list[dict] = []
+    false_risky: list[dict] = []
+    results: list[dict] = []
+
+    for r in raw_results:
+        if r["match"]:
+            correct += 1
+        else:
+            if r["ground_truth"] == "risky" and r["prediction"] in ("safe", "low"):
+                false_safe.append({
+                    "filename": r["filename"],
+                    "risk_level": r["prediction"],
+                    "text": r["clause_text"][:200],
+                    "basis": r["basis"],
+                })
+            elif r["ground_truth"] == "safe" and r["prediction"] in ("high", "medium"):
+                false_risky.append({
+                    "filename": r["filename"],
+                    "risk_level": r["prediction"],
+                    "text": r["clause_text"][:200],
+                })
+        results.append({
+            "filename": r["filename"],
+            "ground_truth": r["ground_truth"],
+            "prediction": r["prediction"],
+            "match": r["match"],
+            "explanation": r["explanation"][:100],
         })
 
     accuracy = correct / total if total > 0 else 0
