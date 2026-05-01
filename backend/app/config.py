@@ -11,8 +11,10 @@ class Settings(BaseSettings):
     ollama_model_name: str = "exaone3.5:7.8b"
     ollama_timeout: int = 180
 
-    # 임베딩 모델 — BAAI/bge-m3: 8192 토큰 컨텍스트, 1024차원, 다국어 지원
-    embedding_model: str = "BAAI/bge-m3"
+    # 임베딩 모델 — nlpai-lab/KURE-v1: 한국어 retrieval SOTA (고려대 NLPAI Lab, 2024-12)
+    # bge-m3 기반으로 한국어 코퍼스 추가 finetune. 동일 1024차원, 8192 컨텍스트라 drop-in 호환.
+    # MTEB Korean Retrieval에서 bge-m3 대비 +5~10점.
+    embedding_model: str = "nlpai-lab/KURE-v1"
     embedding_device: str = "auto"
 
     # Reranker — bge-m3와 호환되는 cross-encoder. 1차 hybrid retrieval 풀을 정밀 재정렬.
