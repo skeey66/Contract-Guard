@@ -98,6 +98,19 @@ def _categorize_source(source: str) -> str:
     return "law"
 
 
+def _is_strong_evidence(ref: dict) -> bool:
+    """frontend shouldDisplayRef와 동일 기준 — 약한 매칭은 등급 근거로 인정 X.
+    - both: ≥0.5 / vector-only: ≥0.65 / bm25-only: 가짜 매칭 위험으로 항상 제외.
+    """
+    src = ref.get("match_source", "vector")
+    sim = ref.get("similarity", 0) or 0
+    if src == "both":
+        return sim >= 0.5
+    if src == "vector":
+        return sim >= 0.65
+    return False
+
+
 _WS_NORM_RE = re.compile(r"\s+")
 
 # 위험 시그널 단어 — quote 폴백 자동 추출용 (도메인 중립).
@@ -199,6 +212,54 @@ def _validate_quote(raw, clause_text: str) -> str | None:
     return None
 
 
+def _reclassify_by_evidence(
+    risk_level: RiskLevel,
+    analysis_status: str,
+    refs: list[dict],
+) -> tuple[RiskLevel, str]:
+    """LLM 위험 판정을 데이터 출처와 매칭 강도에 따라 등급 재분류 (C1: unfair_clause만 medium 근거).
+
+    임대차 도메인은 KB에 judgment ref가 매우 풍부해 sim 0.6+ 매칭이 정상 조항에서도
+    흔하게 발생 (noise). 따라서 medium 자격은 'unfair_clause' 매칭만 인정하고
+    임계값도 0.7로 상향 — 진짜 불공정 사례와 강한 의미 매칭만 medium 유지.
+
+    매칭 강도 (BM25-only 제외):
+    - very_strong (sim ≥ 0.75): high 회복 가능
+    - strong (sim ≥ 0.7): medium 자격
+
+    분류:
+    - HIGH (법률 위반):
+      - rule_high / kb_high (검증된 패턴)
+      - LLM high + very_strong unfair_clause 매칭
+    - MEDIUM (계약자 불리):
+      - LLM high/medium + strong unfair_clause 매칭
+    - LOW (검토 권장):
+      - LLM 위험 판정인데 strong unfair 매칭 없음
+    - SAFE: rule_safe / kb_safe / evidence_filtered / missing / LLM safe
+    """
+    if analysis_status in ("rule_high", "rule_safe", "kb_high", "kb_safe",
+                            "missing", "evidence_filtered"):
+        return risk_level, analysis_status
+    if risk_level not in (RiskLevel.HIGH, RiskLevel.MEDIUM):
+        return risk_level, analysis_status
+
+    def _has_strong_unfair(threshold: float) -> bool:
+        for r in refs:
+            if r.get("match_source", "vector") == "bm25":
+                continue
+            if (r.get("similarity", 0) or 0) < threshold:
+                continue
+            if (r.get("metadata") or {}).get("source", "") in _UNFAIR_CLAUSE_SOURCES:
+                return True
+        return False
+
+    if risk_level == RiskLevel.HIGH and _has_strong_unfair(0.75):
+        return RiskLevel.HIGH, "unfair_strong_evidence"
+    if _has_strong_unfair(0.7):
+        return RiskLevel.MEDIUM, "unfair_evidence"
+    return RiskLevel.LOW, "llm_only"
+
+
 def _normalize_risk_type(raw: str, valid_types: list[str]) -> str:
     """LLM이 반환한 risk_type을 유효한 유형으로 매핑."""
     raw_clean = raw.strip()
@@ -298,6 +359,21 @@ def _build_clause_analyses(
                         f"{len(substantiated)}개 유지"
                     )
                     risks = substantiated
+
+            # 데이터 출처 기반 등급 재분류 (A안):
+            # 같은 "위험" 판정도 KB 법률 매칭/불공정 약관 매칭/매칭 없음에 따라 등급 분리.
+            # → 사용자에게 등급의 근거가 references_detail로 즉시 추적 가능해진다.
+            new_level, new_status = _reclassify_by_evidence(
+                risk_level, analysis_status,
+                per_clause_refs.get(clause.index, []),
+            )
+            if new_level != risk_level:
+                logger.info(
+                    f"조항 {clause.index} 등급 재분류: "
+                    f"{risk_level.value} → {new_level.value} ({new_status})"
+                )
+                risk_level = new_level
+                analysis_status = new_status
         else:
             # index_map에도 없음 = chain이 완전히 누락한 조항 (이상 케이스)
             risk_level = RiskLevel.MEDIUM
@@ -324,6 +400,7 @@ def _build_clause_analyses(
                 category=_categorize_source((ref.get("metadata") or {}).get("source", "")),
                 similarity=float(ref.get("similarity", 0) or 0),
                 article=(ref.get("metadata") or {}).get("article") or None,
+                match_source=ref.get("match_source", "vector"),
             )
             for ref in clause_refs
         ]

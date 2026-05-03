@@ -156,7 +156,11 @@ def _build_rrf_candidates(
     vector_results: list[tuple[str, dict]],
     bm25_results: list[tuple[str, dict]],
 ) -> tuple[dict[str, float], dict[str, dict]]:
-    """벡터 + BM25 결과를 RRF 점수로 머지. 점수 dict + entry dict 반환."""
+    """벡터 + BM25 결과를 RRF 점수로 머지. 점수 dict + entry dict 반환.
+
+    같은 doc_id가 양쪽에 있으면 vector entry를 보존하되 BM25 점수를 추가 기록한다
+    (match_source="both"). 표시용 통합 similarity 계산은 _finalize_display_score 참조.
+    """
     scores: dict[str, float] = {}
     entries: dict[str, dict] = {}
 
@@ -166,10 +170,33 @@ def _build_rrf_candidates(
 
     for rank, (doc_id, entry) in enumerate(bm25_results):
         scores[doc_id] = scores.get(doc_id, 0) + 1.0 / (RRF_K + rank + 1)
-        if doc_id not in entries:
+        if doc_id in entries:
+            # 벡터 + BM25 양쪽 매칭 — 신뢰도 가산 의미. BM25 점수만 보강.
+            entries[doc_id]["bm25_sim"] = entry["bm25_sim"]
+            entries[doc_id]["match_source"] = "both"
+        else:
             entries[doc_id] = entry
 
     return scores, entries
+
+
+# 표시용 통합 similarity 계산 (UI 패널의 % 막대용).
+# 단일 source 매칭은 가짜 매칭 위험이 높아 패널티를 적용한다.
+# - both: 두 source 모두 매칭 → vec_sim 그대로 (의미 + 어휘 모두 신뢰)
+# - vector-only: cosine 그대로 (의미 매칭은 일반적으로 신뢰)
+# - bm25-only: bm25_sim × SINGLE_SOURCE_PENALTY (어휘 우연 겹침 가능성)
+SINGLE_SOURCE_PENALTY = 0.6
+
+
+def _finalize_display_score(entry: dict) -> float:
+    src = entry.get("match_source", "vector")
+    vec = entry.get("vec_sim", 0.0) or 0.0
+    bm25 = entry.get("bm25_sim", 0.0) or 0.0
+    if src == "both":
+        return max(vec, bm25)
+    if src == "vector":
+        return vec
+    return bm25 * SINGLE_SOURCE_PENALTY
 
 
 def _stratified_select(
@@ -259,6 +286,8 @@ def _stratified_select(
     for _, _, doc_id in selected_with_meta:
         entry = entries[doc_id]
         entry["rrf_score"] = round(scores[doc_id], 6)
+        # 표시용 통합 similarity (단일 source는 패널티 적용)
+        entry["similarity"] = round(_finalize_display_score(entry), 4)
         results.append(entry)
 
     return results
@@ -297,7 +326,7 @@ def retrieve_similar(
     # 1차 retrieval 풀은 stratified 선택을 위해 충분히 크게 가져온다.
     pool_k = max(INITIAL_POOL_K, k * 4)
 
-    # 벡터 검색 (ChromaDB)
+    # 벡터 검색 (ChromaDB) — vec_sim은 의미 유사도(cosine)로 신뢰도 높은 표시값 후보
     vector_raw = chroma_service.query(text, k=pool_k, contract_type=contract_type)
     vector_results: list[tuple[str, dict]] = []
     for doc, score in vector_raw:
@@ -305,14 +334,17 @@ def retrieve_similar(
         entry = {
             "id": doc_id,
             "text": doc.page_content,
-            "similarity": round(score, 4),
+            "vec_sim": round(score, 4),
+            "bm25_sim": 0.0,
+            "match_source": "vector",
             "metadata": doc.metadata,
         }
         vector_results.append((doc_id, entry))
 
-    # BM25 검색 — 원점수는 [0, 무제한]이라 벡터 유사도(0~1)와 동일 필드에 저장하면
-    # 표시용 비교가 망가진다. score / (score + C) 매핑으로 일반 BM25 범위(5~60)에서
-    # 0.38~0.88로 매핑되어 saturation 방지.
+    # BM25 검색 — 원점수는 [0, 무제한]이라 벡터 유사도(0~1)와 동일 척도가 아니다.
+    # score / (score + C) 매핑으로 일반 BM25 범위(5~60)에서 0.38~0.88로 매핑.
+    # 단, BM25는 어휘 빈도 매칭이라 의미 무관해도 일반 어휘 겹침으로 점수가 나올 수 있어
+    # 표시용 통합 similarity 계산 시 단일 source면 패널티 적용 (아래 _merge_source_scores).
     bm25_raw = bm25_service.search(text, k=pool_k, contract_type=contract_type)
     bm25_results: list[tuple[str, dict]] = []
     BM25_SCALE_C = 8.0
@@ -323,7 +355,9 @@ def retrieve_similar(
         entry = {
             "id": doc_id,
             "text": doc_dict["text"],
-            "similarity": round(sim, 4),
+            "vec_sim": 0.0,
+            "bm25_sim": round(sim, 4),
+            "match_source": "bm25",
             "metadata": doc_dict.get("metadata", {}),
         }
         bm25_results.append((doc_id, entry))

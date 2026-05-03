@@ -83,6 +83,19 @@ function KbDetailModal({ reference, onClose }) {
   );
 }
 
+// 표시 cutoff: 의미 매칭이 약한 항목은 패널에서 제외.
+// match_source(retrieval 출처)별 차등 임계값 — 단일 source는 가짜 매칭 위험이 높음.
+// - both (벡터 ∩ BM25): 두 source 일치 자체가 강한 신호, 0.5로 관대
+// - vector-only: 한국어 임베딩 cosine 0.65 ≈ "유사 의미" 시작점 (도메인 매칭은 ~0.4-0.5에 흔함)
+// - bm25-only: 어휘 우연 겹침이라 표시 자체 안 함
+function shouldDisplayRef(ref) {
+  const sim = ref?.similarity || 0;
+  const src = ref?.match_source || "vector";
+  if (src === "both") return sim >= 0.5;
+  if (src === "vector") return sim >= 0.65;
+  return false;
+}
+
 // references_detail의 metadata.source를 4분류로 그룹핑.
 // 카테고리별 분류 + 시각적 강도 표시(유사도 막대)로 "어떤 근거가 강한지"를 직관적으로 전달.
 const REF_CATEGORIES = [
@@ -109,6 +122,7 @@ function categorizeReference(ref) {
 function groupReferencesByCategory(references) {
   const grouped = { law: [], judgment: [], safe_clause: [], unfair_clause: [] };
   for (const ref of references || []) {
+    if (!shouldDisplayRef(ref)) continue;
     const cat = categorizeReference(ref);
     grouped[cat].push(ref);
   }
@@ -126,6 +140,14 @@ function GroupedReferencesPanel({ references }) {
   const [activeRef, setActiveRef] = useState(null);
   if (!references || references.length === 0) return null;
   const grouped = groupReferencesByCategory(references);
+  const totalVisible = Object.values(grouped).reduce((s, arr) => s + arr.length, 0);
+  if (totalVisible === 0) {
+    return (
+      <div className="ref-grouped-empty">
+        의미적으로 충분히 유사한 참고 자료를 찾지 못했습니다.
+      </div>
+    );
+  }
 
   return (
     <>
@@ -241,9 +263,12 @@ function EvidenceComparisonPanel({ analysis }) {
   if (refs.length === 0) return null;
 
   // 위험 판정 시: unfair_clause 중 최고 유사도 / 안전 판정 시: law 또는 safe_clause 중 최고
+  // shouldDisplayRef cutoff 적용 — 약한 매칭이 "비교 사례"로 잘못 노출되는 것 방지
   const isRisky = analysis.risk_level === "high" || analysis.risk_level === "medium";
   const targetCats = isRisky ? ["unfair_clause"] : ["law", "safe_clause"];
-  const candidates = refs.filter((r) => targetCats.includes(categorizeReference(r)));
+  const candidates = refs
+    .filter(shouldDisplayRef)
+    .filter((r) => targetCats.includes(categorizeReference(r)));
   if (candidates.length === 0) return null;
   const bestMatch = candidates.reduce(
     (best, r) => (!best || (r.similarity || 0) > (best.similarity || 0) ? r : best),
@@ -821,6 +846,8 @@ function aggregateReferences(clauseAnalyses) {
   for (const ca of clauseAnalyses) {
     const refs = ca.references_detail || [];
     for (const ref of refs) {
+      // 약한 매칭(BM25-only, vector cosine 낮음)은 종합 패널에서도 제외
+      if (!shouldDisplayRef(ref)) continue;
       const cat = ref.category || "law";
       const bucket = buckets[cat] || buckets.law;
       const key = (ref.text || "").trim().slice(0, 200);

@@ -471,6 +471,7 @@ def _rule_safe_result(clause: Clause, reason: str) -> dict:
       "confidence": 0.95,
       "risks": [],
       "explanation": explanation,
+      "_status": "rule_safe",
     }
 
 
@@ -492,6 +493,7 @@ def _rule_high_result(clause: Clause, risk_type: str, reason: str, quote: str = 
         "quote": quote,
       }],
       "explanation": explanation,
+      "_status": "rule_high",
     }
 
 
@@ -720,20 +722,37 @@ async def analyze_all_clauses(
     all_parsed = []
     per_clause_refs: dict[int, list[dict]] = {}
 
-    # 1단계: KB 유사도 기반 분류 (data-driven 우선)
-    # 회색지대로 판정된 조항만 다음 단계로 넘긴다
+    # 1단계: 수동 룰 매칭 (정형 표현·명백 패턴 즉시 분류)
+    # 2단계: KB 유사도 분류 (룰이 못 잡은 회색지대 보완)
+    # 3단계: LLM 분석 (미세 판단·추론)
     llm_target_clauses: list[Clause] = []
-    kb_safe_count = 0
-    kb_high_count = 0
     pre_safe_count = 0
     pre_high_count = 0
+    kb_safe_count = 0
+    kb_high_count = 0
     for clause in clauses:
         # 모든 조항에 대해 retrieval 수행 (KB 분류 + LLM 컨텍스트로 사용)
         refs = _retrieve_for_clause(clause, contract_type)
+        per_clause_refs[clause.index] = refs
+
+        # 1단계: 수동 룰 매칭 (결정적·정형 표현 우선 — KB 가짜 매칭 차단)
+        is_safe, reason = check_safe_rule(clause, contract_type)
+        if is_safe:
+            all_parsed.append(_rule_safe_result(clause, reason))
+            pre_safe_count += 1
+            logger.info(f"조항 {clause.index} 룰 safe 매칭: {reason}")
+            continue
+        is_high, risk_type, high_reason, high_quote = check_high_rule(clause, contract_type)
+        if is_high:
+            all_parsed.append(_rule_high_result(clause, risk_type, high_reason, high_quote))
+            pre_high_count += 1
+            logger.info(f"조항 {clause.index} 룰 high 매칭: {risk_type}")
+            continue
+
+        # 2단계: KB 유사도 분류 (룰이 못 잡은 회색지대 보완)
         kb_result = _classify_by_kb(clause, refs)
         if kb_result:
             all_parsed.append(kb_result)
-            per_clause_refs[clause.index] = refs
             if kb_result["risk_level"] == "safe":
                 kb_safe_count += 1
                 logger.info(
@@ -748,29 +767,12 @@ async def analyze_all_clauses(
                 )
             continue
 
-        # 2단계: 수동 룰 폴백 (KB가 결정 못 한 회색지대 보완)
-        is_safe, reason = check_safe_rule(clause, contract_type)
-        if is_safe:
-            all_parsed.append(_rule_safe_result(clause, reason))
-            per_clause_refs[clause.index] = refs
-            pre_safe_count += 1
-            logger.info(f"조항 {clause.index} 룰 safe 폴백: {reason}")
-            continue
-        is_high, risk_type, high_reason, high_quote = check_high_rule(clause, contract_type)
-        if is_high:
-            all_parsed.append(_rule_high_result(clause, risk_type, high_reason, high_quote))
-            per_clause_refs[clause.index] = refs
-            pre_high_count += 1
-            logger.info(f"조항 {clause.index} 룰 high 폴백: {risk_type}")
-            continue
-
         # 3단계로: LLM에 위임 (미세 판단·추론)
         llm_target_clauses.append(clause)
-        per_clause_refs[clause.index] = refs
 
     logger.info(
-        f"분류 결과: KB safe {kb_safe_count} / KB high {kb_high_count} / "
-        f"룰 safe {pre_safe_count} / 룰 high {pre_high_count} / "
+        f"분류 결과: 룰 safe {pre_safe_count} / 룰 high {pre_high_count} / "
+        f"KB safe {kb_safe_count} / KB high {kb_high_count} / "
         f"LLM 분석 {len(llm_target_clauses)}개"
     )
 

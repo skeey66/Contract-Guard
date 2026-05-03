@@ -11,6 +11,8 @@ class ReferenceItem(BaseModel):
     category: str  # "law" | "judgment" | "clause" — 프론트엔드 탭과 호환되는 3분류 (safe/unfair 약관은 'clause'로 합산)
     similarity: float
     article: str | None = None
+    # retrieval 출처: "both" | "vector" | "bm25". 프론트 표시 cutoff에 활용 (단일 source는 가짜 매칭 위험 ↑).
+    match_source: str = "vector"
 
 
 class ClauseAnalysis(BaseModel):
