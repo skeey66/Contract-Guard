@@ -94,10 +94,11 @@ def _final_clause_text(ca: ClauseAnalysis) -> str:
 
 
 def _risk_label(level: RiskLevel) -> str:
+    # B안 — 액션 중심 4단계. 라벨 의미는 frontend RiskBadge.jsx 참조.
     return {
-        RiskLevel.HIGH: "고위험",
-        RiskLevel.MEDIUM: "중위험",
-        RiskLevel.LOW: "저위험",
+        RiskLevel.HIGH: "법률 위반",
+        RiskLevel.MEDIUM: "계약자 불리",
+        RiskLevel.LOW: "검토 권장",
         RiskLevel.SAFE: "안전",
     }.get(level, str(level))
 

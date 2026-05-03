@@ -39,7 +39,9 @@ def _dump_parse_failure(clause_index: int, status: str, text: str) -> str:
 _LLM_SEMAPHORE = asyncio.Semaphore(3)
 MAX_RETRIES = 1
 # 개별 조항 LLM 호출 타임아웃 (초)
-PER_CLAUSE_TIMEOUT = 90
+# 프롬프트에 explanation 3단 구조(조항 인용 + 법률 비교 + 구체적 결과) 가이드 추가로
+# 추론 토큰이 증가하여 90초 → 120초로 상향. 일부 복잡한 다중 항 조항이 안정적으로 완료되도록 함.
+PER_CLAUSE_TIMEOUT = 120
 
 # 다중 항(項) 분리용 정규식. ①②③ 또는 "1." / "1)" 형태의 리스트 마커.
 # 한 조항 안에 2개 이상 매칭되면 항별 검색 분할을 적용한다.
@@ -472,8 +474,12 @@ def _rule_safe_result(clause: Clause, reason: str) -> dict:
     }
 
 
-def _rule_high_result(clause: Clause, risk_type: str, reason: str) -> dict:
-    """사후 high 룰 매칭 시 LLM 결과를 교정할 때 사용."""
+def _rule_high_result(clause: Clause, risk_type: str, reason: str, quote: str = "") -> dict:
+    """사전·사후 high 룰 매칭 시 LLM 결과를 교정할 때 사용.
+
+    quote는 룰 정규식이 매칭한 원문 substring으로, frontend 형광펜 표시에 사용된다.
+    LLM 호출 없이 룰만으로 처리한 조항도 형광펜이 작동하도록 보장.
+    """
     explanation = _HIGH_EXPLANATIONS.get(risk_type, reason)
     return {
       "clause_index": clause.index,
@@ -483,9 +489,149 @@ def _rule_high_result(clause: Clause, risk_type: str, reason: str) -> dict:
         "risk_type": risk_type,
         "description": reason,
         "suggestion": "해당 조항 삭제 또는 법정 기준에 맞게 재협상 필요",
+        "quote": quote,
       }],
       "explanation": explanation,
     }
+
+
+# ============================================================================
+# KB 기반 데이터 우선 분류기 (Data-driven judgment)
+# ----------------------------------------------------------------------------
+# 수동 룰 대신 RAG 검색 결과의 유사도로 위험·안전을 판정한다.
+# - unfair_clause 샘플과 매우 유사 (sim ≥ KB_HIGH_THRESHOLD) → high
+#   단, law/safe_clause도 함께 매칭되면 "법률 정형 표현"으로 보고 safe 우선
+# - law/safe_clause와 매우 유사 (sim ≥ KB_SAFE_THRESHOLD) → safe
+# - 둘 다 임계 미만이면 LLM이 회색지대 판단 수행
+#
+# 판단 근거가 KB 데이터의 실제 사례라 투명하고 검증 가능하다.
+# ============================================================================
+
+# KB 분류 임계값 — vector embedding(KURE-v1) 기준 0~1 스케일
+# 매우 보수적으로 설정: KB 유사도가 표면 어휘 유사도라 의미 차이를 못 잡는 한계가 있음.
+# false-positive(잘못된 safe 판정)를 막기 위해 높은 임계값 + 엄격한 조건만 KB로 분류,
+# 그 외 모든 회색지대는 LLM이 RAG 근거로 판단하도록 위임.
+KB_HIGH_THRESHOLD = 0.85  # unfair 사례와 매우 유사할 때만 high 확정
+KB_SAFE_THRESHOLD = 0.88  # 법률·표준약관 정형 표현과 거의 동일할 때만 safe 확정
+
+
+def _ref_category(ref: dict) -> str:
+    """references_detail의 metadata.source를 분류 카테고리로 매핑."""
+    meta = ref.get("metadata") or {}
+    src = meta.get("source", "")
+    if src == "unfair_clause":
+        return "unfair"
+    if src == "law" or src.startswith("aihub") is False and src in (
+        "민법", "주택임대차보호법", "근로기준법", "약관규제법/판례",
+        "상가건물임대차보호법", "근로자퇴직급여보장법", "최저임금법",
+        "이자제한법", "공인중개사법", "민사집행법", "건설산업기본법",
+        "하도급거래공정화에관한법률",
+    ):
+        return "law"
+    if src in ("safe_clause", "실무"):
+        return "safe_clause"
+    return "other"
+
+
+def _classify_by_kb(clause: Clause, refs: list[dict]) -> dict | None:
+    """KB 검색 결과의 유사도로 조항을 분류한다. 결정 가능한 경우만 결과 dict 반환.
+
+    Returns:
+        결정 시: parsed result dict (LLM 호출 없이 사용 가능)
+        회색지대: None (호출자가 LLM에게 위임)
+    """
+    if not refs:
+        return None
+
+    best_unfair = None
+    best_safe = None  # law + safe_clause 통합
+    for r in refs:
+        sim = float(r.get("similarity", 0) or 0)
+        cat = _ref_category(r)
+        if cat == "unfair":
+            if not best_unfair or sim > best_unfair[0]:
+                best_unfair = (sim, r)
+        elif cat in ("law", "safe_clause"):
+            if not best_safe or sim > best_safe[0]:
+                best_safe = (sim, r)
+
+    unfair_sim = best_unfair[0] if best_unfair else 0.0
+    safe_sim = best_safe[0] if best_safe else 0.0
+
+    # 안전 신호가 더 강하면 safe (정형 법률·표준약관 표현)
+    if safe_sim >= KB_SAFE_THRESHOLD and safe_sim >= unfair_sim:
+        ref = best_safe[1]
+        meta = ref.get("metadata") or {}
+        return {
+            "clause_index": clause.index,
+            "risk_level": "safe",
+            "confidence": min(0.99, 0.5 + safe_sim / 2),
+            "risks": [],
+            "explanation": (
+                f"KB 데이터의 [{meta.get('source', 'law')}] 자료와 "
+                f"유사도 {safe_sim:.0%}로 매칭되어 법률·표준약관 정형 표현으로 판단됩니다. "
+                f"[참고] {ref.get('text', '')[:200]}"
+            ),
+            "_status": "kb_safe",
+        }
+
+    # 위험 신호 (unfair_clause와 매우 유사하고 안전 매칭이 약한 경우)
+    if unfair_sim >= KB_HIGH_THRESHOLD and (safe_sim < KB_SAFE_THRESHOLD or unfair_sim - safe_sim > 0.05):
+        ref = best_unfair[1]
+        meta = ref.get("metadata") or {}
+        # 본문에서 가장 의미 있는 위험 부분을 quote로 추출 (간단한 휴리스틱: 입력 조항의 핵심 문장)
+        # KB sample과 의미적으로 유사한 부분이라는 보장은 없지만, 적어도 본문에서 가져옴
+        quote = _extract_risky_excerpt(clause.content)
+        return {
+            "clause_index": clause.index,
+            "risk_level": "high",
+            "confidence": min(0.99, 0.5 + unfair_sim / 2),
+            "risks": [{
+                "risk_type": "권리제한",
+                "description": (
+                    f"KB 데이터의 불공정 약관 사례와 유사도 {unfair_sim:.0%}로 매칭. "
+                    f"해당 사례는 약관규제법 위반으로 분류됨."
+                ),
+                "suggestion": "유사 사례를 참고하여 조항 삭제 또는 법률 기준에 맞게 재협상 권장",
+                "quote": quote or "",
+            }],
+            "explanation": (
+                f"본 조항은 KB 데이터의 [약관-불공정] 사례와 유사도 {unfair_sim:.0%}로 매칭됩니다. "
+                f"매칭된 KB 사례: '{ref.get('text', '')[:200]}'"
+            ),
+            "_status": "kb_high",
+        }
+
+    # 회색지대 — LLM에 위임
+    return None
+
+
+def _extract_risky_excerpt(content: str, max_len: int = 100) -> str | None:
+    """입력 조항에서 위험 신호 단어 근처의 substring을 추출 (frontend 형광펜용 폴백).
+
+    KB 매칭은 의미 기반이라 본문의 어느 부분이 위험인지 직접적으로 알 수 없다.
+    여기서는 위험 시그널 단어가 등장하는 문장을 추출해 형광펜의 fallback으로 제공.
+    """
+    if not content:
+        return None
+    # 도메인 중립 위험 시그널 단어 (광범위)
+    SIGNAL_WORDS = [
+        "없이", "없다", "포기", "전적으로", "단독", "일방", "즉시",
+        "면제", "배제", "초과", "공제", "유보", "거부", "제한",
+        "본사", "소재지", "지정", "전속관할",
+    ]
+    sentences = re.split(r"[.。\n]", content)
+    for sent in sentences:
+        sent_strip = sent.strip()
+        if not sent_strip or len(sent_strip) < 10:
+            continue
+        if any(w in sent_strip for w in SIGNAL_WORDS):
+            if len(sent_strip) <= max_len:
+                return sent_strip
+            return sent_strip[:max_len].rstrip(" ,·")
+    # 시그널 못 찾으면 첫 문장 반환
+    first = sentences[0].strip() if sentences else ""
+    return first[:max_len] if first else None
 
 
 async def _analyze_single_clause(
@@ -493,13 +639,16 @@ async def _analyze_single_clause(
     contract_type: str = "lease",
     parties: dict[str, str] | None = None,
     sub_type: str | None = None,
+    references: list[dict] | None = None,
 ) -> tuple[Clause, str, list[dict], str]:
     """단일 조항을 LLM으로 분석. 세마포어로 동시 요청 제한, 파싱 실패 시 1회 재시도.
 
+    references가 None이면 내부에서 retrieve, 호출자가 미리 fetch한 경우 그대로 사용 (중복 호출 방지).
     반환값 4번째 원소는 상태 힌트: "ok" | "timeout" | "empty" | "parse_failed".
     호출자는 이 힌트로 무음 폴백을 가시화한다.
     """
-    references = _retrieve_for_clause(clause, contract_type)
+    if references is None:
+        references = _retrieve_for_clause(clause, contract_type)
 
     ref_text = _build_reference_context(references, contract_type, sub_type)
 
@@ -554,47 +703,83 @@ async def analyze_all_clauses(
 ) -> dict:
     """전체 조항을 조항별 개별 LLM 호출로 분석.
 
-    결정적 룰 레이어 적용 순서:
-      1. 사전 safe 룰 매칭 시 LLM 호출 없이 safe 확정
-      2. LLM 호출 후 사후 high 룰 매칭 시 high로 강제 교정
+    분류 단계 (KB 데이터 우선):
+      1. KB 유사도 분류 — RAG 검색 결과의 unfair_clause / law·safe_clause 유사도로 결정
+         · unfair_clause sim ≥ KB_HIGH_THRESHOLD → high (판단 근거: KB 사례)
+         · law/safe_clause sim ≥ KB_SAFE_THRESHOLD → safe (판단 근거: KB 정형 표현)
+         · 둘 다 임계 미만이면 회색지대 → LLM에 위임
+      2. 수동 룰 (safety net) — KB가 결정 못 한 회색지대에서만 적용
+      3. LLM 호출 (회색지대) — 미세한 판단·추론 + RAG 근거 explanation 생성
+      4. 사후 룰 교정 — LLM의 명백한 오판 보정
     """
     sub_label = f"/{sub_type}" if sub_type else ""
     logger.info(
-        f"LLM 분석 시작: {len(clauses)}개 조항 (유형: {contract_type}{sub_label})"
+        f"분석 시작: {len(clauses)}개 조항 (유형: {contract_type}{sub_label})"
     )
 
     all_parsed = []
     per_clause_refs: dict[int, list[dict]] = {}
 
-    # 1단계: 사전 safe / high 룰로 LLM 호출 대상 필터링
+    # 1단계: KB 유사도 기반 분류 (data-driven 우선)
+    # 회색지대로 판정된 조항만 다음 단계로 넘긴다
     llm_target_clauses: list[Clause] = []
+    kb_safe_count = 0
+    kb_high_count = 0
     pre_safe_count = 0
     pre_high_count = 0
     for clause in clauses:
+        # 모든 조항에 대해 retrieval 수행 (KB 분류 + LLM 컨텍스트로 사용)
+        refs = _retrieve_for_clause(clause, contract_type)
+        kb_result = _classify_by_kb(clause, refs)
+        if kb_result:
+            all_parsed.append(kb_result)
+            per_clause_refs[clause.index] = refs
+            if kb_result["risk_level"] == "safe":
+                kb_safe_count += 1
+                logger.info(
+                    f"조항 {clause.index} KB safe 분류 "
+                    f"(유사도 {kb_result['confidence']:.2f})"
+                )
+            else:
+                kb_high_count += 1
+                logger.info(
+                    f"조항 {clause.index} KB high 분류 "
+                    f"(유사도 {kb_result['confidence']:.2f})"
+                )
+            continue
+
+        # 2단계: 수동 룰 폴백 (KB가 결정 못 한 회색지대 보완)
         is_safe, reason = check_safe_rule(clause, contract_type)
         if is_safe:
             all_parsed.append(_rule_safe_result(clause, reason))
-            per_clause_refs[clause.index] = []
+            per_clause_refs[clause.index] = refs
             pre_safe_count += 1
-            logger.info(f"조항 {clause.index} 사전 safe 룰 매칭: {reason}")
+            logger.info(f"조항 {clause.index} 룰 safe 폴백: {reason}")
             continue
-        is_high, risk_type, high_reason = check_high_rule(clause, contract_type)
+        is_high, risk_type, high_reason, high_quote = check_high_rule(clause, contract_type)
         if is_high:
-            all_parsed.append(_rule_high_result(clause, risk_type, high_reason))
-            per_clause_refs[clause.index] = []
+            all_parsed.append(_rule_high_result(clause, risk_type, high_reason, high_quote))
+            per_clause_refs[clause.index] = refs
             pre_high_count += 1
-            logger.info(f"조항 {clause.index} 사전 high 룰 매칭: {risk_type} ({high_reason})")
+            logger.info(f"조항 {clause.index} 룰 high 폴백: {risk_type}")
             continue
+
+        # 3단계로: LLM에 위임 (미세 판단·추론)
         llm_target_clauses.append(clause)
+        per_clause_refs[clause.index] = refs
 
     logger.info(
-        f"사전 필터: safe {pre_safe_count}개 / high {pre_high_count}개 확정, "
-        f"{len(llm_target_clauses)}개 LLM 분석"
+        f"분류 결과: KB safe {kb_safe_count} / KB high {kb_high_count} / "
+        f"룰 safe {pre_safe_count} / 룰 high {pre_high_count} / "
+        f"LLM 분석 {len(llm_target_clauses)}개"
     )
 
-    # 2단계: 남은 조항만 LLM 호출
+    # 3단계: 회색지대 LLM 호출 (사전 fetch한 references 재사용)
     tasks = [
-        _analyze_single_clause(c, contract_type, parties, sub_type)
+        _analyze_single_clause(
+            c, contract_type, parties, sub_type,
+            references=per_clause_refs.get(c.index),
+        )
         for c in llm_target_clauses
     ]
     responses = await asyncio.gather(*tasks, return_exceptions=True)
@@ -624,9 +809,9 @@ async def analyze_all_clauses(
             logger.warning(f"조항 {clause.index} 파싱 실패. LLM 원문:\n{text[:500]}")
             # 파싱 실패 시 룰 레이어로 폴백 (사전 필터에서 매칭되지 않은 조항이지만,
             # 패턴이 추가되거나 정규화 차이로 사후에 매칭될 수 있음)
-            is_high_fb, risk_type_fb, reason_fb = check_high_rule(clause, contract_type)
+            is_high_fb, risk_type_fb, reason_fb, quote_fb = check_high_rule(clause, contract_type)
             if is_high_fb:
-                all_parsed.append(_rule_high_result(clause, risk_type_fb, reason_fb))
+                all_parsed.append(_rule_high_result(clause, risk_type_fb, reason_fb, quote_fb))
                 logger.info(f"조항 {clause.index} 파싱 실패 → high 룰 폴백: {risk_type_fb}")
                 continue
             is_safe_fb, safe_reason_fb = check_safe_rule(clause, contract_type)
@@ -660,14 +845,14 @@ async def analyze_all_clauses(
 
         # 3단계: 사후 high 룰 교정 — LLM이 safe로 판정했지만 명백한 high 패턴이면 교정
         # medium은 LLM의 판단을 존중 (맥락상 이유가 있을 수 있음)
-        is_high, risk_type, reason = check_high_rule(clause, contract_type)
+        is_high, risk_type, reason, post_quote = check_high_rule(clause, contract_type)
         llm_level = (result.get("risk_level") or "").lower().strip()
         if is_high and llm_level == "safe":
             logger.info(
                 f"조항 {clause.index} 사후 high 룰 교정: "
                 f"LLM={llm_level} → high ({reason})"
             )
-            result = _rule_high_result(clause, risk_type, reason)
+            result = _rule_high_result(clause, risk_type, reason, post_quote)
 
         all_parsed.append(result)
         logger.info(f"조항 {clause.index} 파싱 성공")

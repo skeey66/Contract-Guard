@@ -1293,6 +1293,398 @@ body {
   margin-bottom: 1rem;
 }
 
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   KPI Card Row — 대시보드 핵심 지표 5개 (큰 숫자 + 라벨 + 컨텍스트)
+   페이지 진입 첫 5초에 전체 상태 파악
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.85rem;
+  margin-bottom: 1.1rem;
+}
+
+.kpi-card {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  box-shadow: var(--shadow);
+  position: relative;
+  overflow: hidden;
+  transition: all var(--transition);
+}
+
+.kpi-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--gold);
+  opacity: 0.6;
+}
+
+.kpi-card-warn::before { background: var(--risk-medium); opacity: 0.85; }
+.kpi-card-success::before { background: var(--risk-safe); opacity: 0.7; }
+
+.kpi-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-lg);
+}
+
+.kpi-num {
+  font-size: 1.85rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-num-unit {
+  font-size: 1.1rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  margin-left: 2px;
+}
+
+.kpi-card-warn .kpi-num { color: var(--risk-medium); }
+.kpi-card-success .kpi-num { color: var(--risk-safe); }
+
+.kpi-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 0.15rem;
+}
+
+.kpi-sub {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+}
+
+@media (max-width: 1100px) {
+  .kpi-row { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 720px) {
+  .kpi-row { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Risk Heatmap Bar — 도넛 카드 내부 (카드 전체 너비 사용)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.risk-heatmap {
+  width: 100%;
+  margin-top: 1.1rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border-light);
+}
+
+.risk-heatmap-label {
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 0.6rem;
+}
+
+/* grid auto-fit — 카드 너비에 cell이 균일하게 채워짐. 셀 크기 시원하게. */
+.risk-heatmap-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(42px, 1fr));
+  gap: 6px;
+  margin-bottom: 0.7rem;
+}
+
+.risk-heatmap-cell {
+  height: 44px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--white);
+  transition: all var(--transition);
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.risk-heatmap-cell:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+  filter: brightness(1.1);
+}
+
+.risk-heatmap-cell-high {
+  background: var(--risk-high);
+}
+.risk-heatmap-cell-medium {
+  background: var(--risk-medium);
+}
+.risk-heatmap-cell-low {
+  background: #b8a024;
+  color: var(--white);
+}
+.risk-heatmap-cell-safe {
+  background: var(--risk-safe);
+}
+
+.risk-heatmap-num {
+  display: inline-block;
+}
+
+.risk-heatmap-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.74rem;
+  color: var(--text-sub);
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-light);
+}
+
+.risk-heatmap-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.risk-heatmap-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Risk Type Breakdown — 자주 나타난 위험 유형 Top 3 카드
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.risk-type-breakdown {
+  width: 100%;
+  margin-top: 1rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border-light);
+}
+
+.risk-type-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 0.55rem;
+}
+
+.risk-type-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.risk-type-card {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-light);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--radius-sm);
+  padding: 0.7rem 0.95rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  transition: all var(--transition);
+}
+
+.risk-type-card:hover {
+  transform: translateY(-1px);
+  border-left-color: var(--gold-light);
+}
+
+.risk-type-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.risk-type-count {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--gold);
+  background: var(--gold-dim);
+  padding: 2px 9px;
+  border-radius: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 720px) {
+  .risk-type-cards { grid-template-columns: 1fr; }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Result Top Bar V2 — UI/UX 개선안 #1: 메타데이터 + 위험도 배지 + 액션 버튼
+   "5초 안에 전체 위험도 파악, 다음 행동까지 한눈에"
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.result-top-bar-v2 {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 1rem;
+  padding: 1.1rem 1.3rem;
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.result-top-back {
+  display: flex;
+  align-items: center;
+}
+
+.result-top-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.result-top-meta .result-filename {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.result-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.result-meta-item {
+  white-space: nowrap;
+}
+
+.result-meta-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.1rem;
+}
+
+.result-meta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+
+.meta-badge-high {
+  background: rgba(231, 76, 60, 0.1);
+  color: var(--risk-high);
+  border-color: rgba(231, 76, 60, 0.3);
+}
+.meta-badge-medium {
+  background: rgba(230, 126, 34, 0.1);
+  color: var(--risk-medium);
+  border-color: rgba(230, 126, 34, 0.3);
+}
+.meta-badge-low {
+  background: rgba(184, 160, 36, 0.12);
+  color: #927e1c;
+  border-color: rgba(184, 160, 36, 0.3);
+}
+.meta-badge-safe {
+  background: rgba(39, 174, 96, 0.1);
+  color: var(--risk-safe);
+  border-color: rgba(39, 174, 96, 0.3);
+}
+
+.result-top-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.top-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--white);
+  color: var(--text-sub);
+  cursor: pointer;
+  text-decoration: none;
+  transition: all var(--transition);
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.top-action-btn:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: var(--gold-dim);
+}
+
+.top-action-btn-active {
+  background: var(--gold);
+  color: var(--white);
+  border-color: var(--gold);
+}
+.top-action-btn-active:hover {
+  background: var(--gold-light);
+  border-color: var(--gold-light);
+  color: var(--white);
+}
+
+.top-action-btn-primary {
+  background: var(--primary);
+  color: var(--white);
+  border-color: var(--primary);
+}
+.top-action-btn-primary:hover {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: var(--white);
+}
+
+@media (max-width: 900px) {
+  .result-top-bar-v2 {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+  .result-top-actions {
+    flex-wrap: wrap;
+  }
+}
+
 .back-button {
   display: inline-flex;
   align-items: center;
@@ -1692,6 +2084,740 @@ body {
   font-size: 0.88rem;
   color: var(--text);
   line-height: 1.85;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Evidence Comparison Panel — 본 조항 ↔ KB 매칭 컴팩트 세로 스택
+   좁은 사이드 패널에서 양쪽 모두 깔끔한 계약서 형태로 표시 + 형광펜 매칭
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.evidence-compare {
+  margin: 0 0 1.2rem;
+  padding: 0.9rem 0.95rem;
+  border-radius: var(--radius-sm);
+  background: var(--white);
+  border: 1px solid var(--border);
+  font-size: 0.82rem;
+  box-shadow: var(--shadow);
+}
+
+/* 위험/안전 좌측 액센트 라인 */
+.evidence-compare-risk {
+  border-left: 3px solid var(--risk-high);
+}
+.evidence-compare-safe {
+  border-left: 3px solid var(--risk-safe);
+}
+
+.evidence-compare-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.evidence-compare-block-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.evidence-compare-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--gold);
+  text-transform: uppercase;
+}
+
+/* 본 조항·KB 사례 — 계약서 형태로 깔끔하게 (들여쓰기 + 회색 좌측 라인) */
+.evidence-compare-doc {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-alt);
+  border-left: 2px solid var(--border);
+  border-radius: 0 4px 4px 0;
+  line-height: 1.75;
+  color: var(--text);
+  font-size: 0.82rem;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  font-family: "Pretendard Variable", "Pretendard", -apple-system, BlinkMacSystemFont,
+    system-ui, sans-serif;
+}
+
+.evidence-compare-doc-kb {
+  color: var(--text-sub);
+  font-size: 0.78rem;
+}
+
+/* KB 매칭 블록 — 클릭 가능한 button 스타일 */
+.evidence-compare-block-clickable {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  border-radius: 4px;
+  transition: background var(--transition);
+}
+.evidence-compare-block-clickable:hover .evidence-compare-doc-kb {
+  background: var(--gold-dim);
+  border-left-color: var(--gold);
+}
+.evidence-compare-block-clickable:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.evidence-compare-block-action {
+  margin-left: auto;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  transition: color var(--transition);
+}
+.evidence-compare-block-clickable:hover .evidence-compare-block-action {
+  color: var(--gold);
+}
+
+/* 가운데 연결선 + 매칭 정보 (수평 라인 + 가운데 칩) */
+.evidence-compare-connector {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0.7rem 0;
+}
+
+.evidence-compare-connector-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, var(--gold-dim2) 50%, transparent 100%);
+}
+
+.evidence-compare-connector-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0.7rem;
+  background: var(--gold-dim);
+  border: 1px solid var(--gold-dim2);
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+.evidence-compare-sim {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--primary);
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.evidence-compare-tag {
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Grouped References Panel — 카테고리별 + 유사도 (검정/골드 톤)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.ref-grouped {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.ref-grouped-cat {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--white);
+  overflow: hidden;
+}
+
+.ref-grouped-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.8rem;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border-light);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ref-grouped-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--gold-dim);
+  color: var(--gold);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.ref-grouped-label {
+  flex: 1;
+  letter-spacing: 0.02em;
+}
+
+.ref-grouped-count {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.ref-grouped-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.4rem 0.8rem 0.7rem;
+}
+
+.ref-grouped-item {
+  padding: 0.55rem 0;
+  border-top: 1px solid var(--border-light);
+  font-size: 0.78rem;
+  line-height: 1.65;
+}
+.ref-grouped-item:first-child {
+  border-top: none;
+}
+
+.ref-grouped-bar-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+
+.ref-grouped-bar {
+  height: 4px;
+  background: var(--gold);
+  border-radius: 2px;
+  transition: width 0.25s ease;
+}
+
+.ref-grouped-bar-track {
+  position: relative;
+  flex: 1;
+  height: 4px;
+  background: var(--border-light);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.ref-grouped-pct {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-sub);
+  min-width: 36px;
+  text-align: right;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.ref-grouped-text {
+  margin: 0;
+  color: var(--text-sub);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/* GroupedReferences 항목 — 클릭 가능 버튼 */
+.ref-grouped-item-btn {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 0.4rem 0.5rem;
+  margin: -0.4rem -0.5rem;
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: background var(--transition);
+}
+.ref-grouped-item-btn:hover {
+  background: var(--gold-dim);
+}
+.ref-grouped-item-btn:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: -2px;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   KB Detail Modal — 매칭 사례·참고자료 전문 보기
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.kb-detail-modal {
+  max-width: 720px;
+}
+
+.kb-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 0.7rem 1.2rem;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border-light);
+  font-size: 0.78rem;
+  color: var(--text-sub);
+}
+
+.kb-detail-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.kb-detail-meta-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--gold);
+  text-transform: uppercase;
+}
+
+.kb-detail-text {
+  font-size: 0.88rem;
+  line-height: 1.85;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  padding: 0.4rem 0;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Rewrite Editor — 수정안 작성/표시 시각 개선
+   원문↔수정안 비교 토글, 글자수 표시, 골드 액센트 버튼
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.rewrite-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.rewrite-source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.rewrite-source-user {
+  background: var(--gold-dim);
+  color: var(--gold);
+  border: 1px solid var(--gold-dim2);
+}
+
+.rewrite-source-ai {
+  background: var(--bg-alt);
+  color: var(--text-sub);
+  border: 1px solid var(--border);
+}
+
+.rewrite-source-time {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.rewrite-toggle-original {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 9px;
+  font-size: 0.72rem;
+  color: var(--text-sub);
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: inherit;
+}
+.rewrite-toggle-original:hover {
+  background: var(--gold-dim);
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+/* 원문↔수정안 비교 */
+.rewrite-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+}
+
+.rewrite-compare-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.rewrite-compare-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.rewrite-compare-text {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-alt);
+  border-left: 2px solid var(--border);
+  border-radius: 0 4px 4px 0;
+  font-size: 0.82rem;
+  line-height: 1.7;
+  color: var(--text-sub);
+  white-space: pre-wrap;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  font-family: "Pretendard Variable", "Pretendard", -apple-system, BlinkMacSystemFont,
+    system-ui, sans-serif;
+}
+
+.rewrite-compare-text-orig {
+  border-left-color: var(--text-muted);
+}
+
+.rewrite-compare-text-new {
+  border-left-color: var(--gold);
+  color: var(--text);
+  background: var(--gold-dim);
+}
+
+.rewrite-compare-arrow {
+  align-self: center;
+  font-size: 1rem;
+  color: var(--gold);
+  font-weight: 300;
+  margin: 0.1rem 0;
+}
+
+/* 편집 모드 — 원문 reference + 글자수 */
+.rewrite-original-ref {
+  margin-bottom: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.rewrite-original-ref summary {
+  cursor: pointer;
+  color: var(--text-sub);
+  padding: 0.3rem 0.5rem;
+  background: var(--bg-alt);
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  user-select: none;
+  list-style: none;
+}
+.rewrite-original-ref summary::-webkit-details-marker { display: none; }
+.rewrite-original-ref summary::before {
+  content: "▸ ";
+  color: var(--gold);
+}
+.rewrite-original-ref[open] summary::before {
+  content: "▾ ";
+}
+.rewrite-original-ref summary:hover {
+  background: var(--gold-dim);
+  color: var(--gold);
+}
+
+.rewrite-original-text {
+  margin: 0.4rem 0 0;
+  padding: 0.55rem 0.7rem;
+  background: var(--bg-alt);
+  border-left: 2px solid var(--text-muted);
+  border-radius: 0 4px 4px 0;
+  font-size: 0.78rem;
+  line-height: 1.65;
+  color: var(--text-sub);
+  white-space: pre-wrap;
+  word-break: keep-all;
+  font-family: "Pretendard Variable", "Pretendard", sans-serif;
+}
+
+.rewrite-editor-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: -0.2rem;
+  margin-bottom: 0.4rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.rewrite-meta-shorter {
+  color: var(--risk-safe);
+  font-weight: 600;
+}
+
+.rewrite-meta-longer {
+  color: var(--text-sub);
+  font-weight: 600;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Rewrite Edit Modal — 가운데 정렬 모달 (ref-modal 패턴 재사용)
+   기존 ref-modal의 슬라이드 애니메이션을 그대로 사용. 큰 textarea + 원문 비교.
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.rewrite-edit-modal {
+  max-width: 1100px;
+  max-height: 95vh;
+  height: 90vh;
+}
+
+.rewrite-edit-modal-body {
+  padding: 1.5rem 1.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.4rem;
+}
+
+.rewrite-edit-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  padding: 0.85rem 1.4rem;
+  background: var(--bg-alt);
+  border-top: 1px solid var(--border);
+}
+
+.rewrite-drawer-title {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.rewrite-drawer-eyebrow {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--gold);
+  text-transform: uppercase;
+}
+
+.rewrite-drawer-clause {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.rewrite-drawer-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.rewrite-drawer-section-label {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.rewrite-drawer-orig {
+  margin: 0;
+  padding: 1rem 1.2rem;
+  background: var(--bg-alt);
+  border-left: 3px solid var(--text-muted);
+  border-radius: 0 6px 6px 0;
+  font-size: 0.9rem;
+  line-height: 1.8;
+  color: var(--text-sub);
+  white-space: pre-wrap;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  font-family: "Pretendard Variable", "Pretendard", sans-serif;
+  max-height: 240px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+/* 수정안 섹션이 남은 공간을 모두 차지하도록 flex */
+.rewrite-edit-modal-body .rewrite-drawer-section:last-of-type {
+  flex: 1;
+  min-height: 0;
+}
+
+.rewrite-drawer-textarea {
+  width: 100%;
+  flex: 1;
+  min-height: 480px;
+  padding: 1.1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--gold);
+  border-radius: 0 6px 6px 0;
+  background: var(--gold-dim);
+  font-family: "Pretendard Variable", "Pretendard", sans-serif;
+  font-size: 0.95rem;
+  line-height: 1.8;
+  color: var(--text);
+  resize: vertical;
+  transition: all var(--transition);
+}
+.rewrite-drawer-textarea:focus {
+  outline: none;
+  background: var(--white);
+  border-left-color: var(--gold);
+  box-shadow: 0 0 0 3px var(--gold-dim2);
+}
+
+.rewrite-drawer-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.rewrite-drawer-error {
+  margin: 0;
+  padding: 0.55rem 0.85rem;
+  background: rgba(231, 76, 60, 0.08);
+  border-left: 3px solid var(--risk-high);
+  border-radius: 0 4px 4px 0;
+  font-size: 0.82rem;
+  color: var(--risk-high);
+}
+
+/* 조항 본문 형광펜 — LLM explanation에서 직접 인용된 문구를 본문에서 강조.
+   linear-gradient로 진짜 형광펜처럼 텍스트 하단 절반만 노란색이 칠해진 느낌. */
+.clause-highlight {
+  background: linear-gradient(transparent 55%, #fde68a 55%, #fde68a 92%, transparent 92%);
+  padding: 0 1px;
+  color: inherit;
+  font-weight: 500;
+  border-radius: 0;
+  /* 본문 줄간격 유지하면서 형광펜 효과만 추가 */
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.doc-clause-text:has(.clause-highlight) {
+  /* 형광펜이 있는 조항은 줄간격 살짝 넓혀 가독성 확보 */
+  line-height: 1.85;
+}
+
+/* RAG 인용 뱃지 — explanation 안의 [참고N] 토큰을 클릭 가능한 인라인 버튼으로 변환.
+   LLM 인용과 실제 RAG 자료를 직접 대조할 수 있게 해서 신뢰성 강화. */
+.citation-badge {
+  display: inline-block;
+  padding: 0 0.4em;
+  margin: 0 0.15em;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: 4px;
+  color: #1d4ed8;
+  font-size: 0.85em;
+  font-weight: 500;
+  font-family: inherit;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.citation-badge:hover {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: rgba(59, 130, 246, 0.55);
+}
+
+.citation-badge-active {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
+.citation-missing {
+  color: var(--text-muted);
+  text-decoration: line-through dotted;
+}
+
+.citation-popup {
+  margin-top: 0.6rem;
+  padding: 0.7rem 0.85rem;
+  background: rgba(59, 130, 246, 0.06);
+  border-left: 3px solid #1d4ed8;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  line-height: 1.65;
+  animation: citation-popup-in 0.15s ease-out;
+}
+
+@keyframes citation-popup-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.citation-popup-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid rgba(59, 130, 246, 0.18);
+}
+
+.citation-popup-num {
+  font-weight: 700;
+  color: #1d4ed8;
+  font-size: 0.85rem;
+}
+
+.citation-popup-source {
+  flex: 1;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.citation-popup-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+}
+
+.citation-popup-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+
+.citation-popup-body {
+  white-space: pre-wrap;
+  color: var(--text);
 }
 
 /* 위험 요소 */
@@ -2367,6 +3493,28 @@ body {
   .dash-card-summary { grid-column: auto; }
 }
 
+/* 위험도 분포 카드 내부 — 가로 분할: 좌측 도넛, 우측 히트맵+위험유형 */
+.dash-chart-split {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+.dash-chart-left {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dash-chart-right {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+@media (max-width: 720px) {
+  .dash-chart-split { grid-template-columns: 1fr; }
+}
+
 .dash-card {
   background: var(--white);
   border: 1px solid rgba(0, 0, 0, 0.08);
@@ -2494,10 +3642,14 @@ body {
 
 /* 원그래프 카드 */
 .dash-card-chart {
-  align-items: center;
+  align-items: stretch;
 }
 .dash-card-chart .dash-card-header {
   align-self: stretch;
+}
+/* 도넛 차트만 가운데 정렬 (히트맵·Top3는 카드 전체 너비를 쓰도록) */
+.dash-card-chart .pie-chart {
+  align-self: center;
 }
 
 .pie-chart {
@@ -2508,6 +3660,33 @@ body {
   gap: 0.85rem;
 }
 .pie-chart-svg { display: block; }
+
+/* 도넛 차트 시계방향 채움 애니메이션 — 12시 방향에서 시작해 각 segment가 순차적으로 그려짐.
+   stroke-dasharray를 0에서 최종값으로 transition. 각 arc는 0.18초 간격 delay. */
+.pie-arc {
+  stroke-dasharray: 0 var(--pie-circ);
+  animation: pie-grow 0.85s cubic-bezier(0.65, 0, 0.35, 1) var(--pie-delay, 0s) forwards;
+}
+
+@keyframes pie-grow {
+  to {
+    stroke-dasharray: var(--pie-dash) var(--pie-gap);
+  }
+}
+
+/* 중앙 숫자도 차트 채움이 끝날 즈음에 fade-in */
+.pie-chart-center-num {
+  opacity: 0;
+  animation: pie-center-fade 0.5s ease-out 0.7s forwards;
+}
+.pie-chart-center-label {
+  opacity: 0;
+  animation: pie-center-fade 0.5s ease-out 0.85s forwards;
+}
+@keyframes pie-center-fade {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 .pie-chart-center-num {
   font-size: 1.5rem;
   font-weight: 700;
@@ -2516,6 +3695,25 @@ body {
 .pie-chart-center-label {
   font-size: 0.7rem;
   fill: var(--text-sub);
+}
+
+/* 각 세그먼트 위 % 라벨 — 검정 글씨 + 흰 stroke로 어떤 segment 위에서도 가독성 확보 */
+.pie-arc-pct {
+  font-size: 0.78rem;
+  font-weight: 700;
+  fill: var(--primary, #1a1a1a);
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.85);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  opacity: 0;
+  animation: pie-pct-fade 0.4s ease-out 1.2s forwards;
+}
+@keyframes pie-pct-fade {
+  from { opacity: 0; transform: scale(0.85); }
+  to { opacity: 1; transform: scale(1); }
 }
 .pie-chart-legend {
   list-style: none;
@@ -2642,6 +3840,19 @@ body {
   flex-direction: column;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
   overflow: hidden;
+  /* 모달 슬라이드 인 애니메이션 — 약간 아래에서 위로 살짝 + 페이드 + 스케일 */
+  animation: refModalSlideIn 0.32s cubic-bezier(0.32, 0.72, 0, 1);
+  transform-origin: center;
+}
+@keyframes refModalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 .ref-modal-header {
   display: flex;

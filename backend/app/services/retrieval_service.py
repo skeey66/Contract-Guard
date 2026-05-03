@@ -8,6 +8,17 @@ from backend.app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# legalize-kr 법률 markdown은 `1\.`처럼 markdown 이스케이프(\)가 본문에 그대로 남아 있어
+# 사용자 화면이나 LLM 프롬프트에 노출되면 가독성을 해친다. KB 재빌드 없이 retrieval 시점에서
+# 일괄 정리. 법률 본문에 자주 등장하는 백슬래시 이스케이프만 선택적으로 제거.
+_MD_ESCAPE_RE = re.compile(r"\\([\.\(\)\*_#>|\[\]])")
+
+
+def _clean_md_escapes(text: str) -> str:
+    if not text:
+        return text
+    return _MD_ESCAPE_RE.sub(r"\1", text)
+
 # RRF 상수 (k가 클수록 하위 순위 문서의 영향력 증가)
 RRF_K = 60
 
@@ -332,6 +343,11 @@ def retrieve_similar(
         scores = _apply_reranker(text, scores, entries)
 
     combined = _stratified_select(scores, entries, top_k=k)
+    # markdown 이스케이프 제거 — KB에 `1\.` 같은 잔여 문자가 그대로 저장되어 있어
+    # LLM 프롬프트·UI 표시에 노이즈가 됨. retrieval 출력 시점에서 일괄 정리.
+    for entry in combined:
+        if "text" in entry:
+            entry["text"] = _clean_md_escapes(entry["text"])
     logger.debug(
         f"하이브리드 검색 완료: 벡터 {len(vector_results)}건, "
         f"BM25 {len(bm25_results)}건, "

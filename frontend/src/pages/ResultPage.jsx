@@ -10,6 +10,482 @@ const EXPORT_FORMATS = [
   { key: "hwpx", label: "HWPX", desc: "한글" },
 ];
 
+// 헤더 메타 라벨 — contract_type 사용자 친화 표시
+const CONTRACT_TYPE_LABELS = {
+  lease: "임대차 계약서",
+  sales: "매매 계약서",
+  employment: "근로 계약서",
+  service: "용역·도급 계약서",
+  loan: "금전소비대차 계약서",
+};
+
+// 텍스트 안의 `**X**` markdown bold 패턴을 형광펜(`<mark>`)으로 변환.
+// **수정안(권고 사항)에만** 적용 — LLM이 권고 수정안에서 강조하고 싶은 부분을 `**X**`로 표시.
+// 근거자료(법률·약관)의 `**`는 단순 항 번호 강조라서 별개 함수로 제거 처리.
+function renderWithMdMarks(text) {
+  if (!text) return null;
+  const parts = String(text).split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((p, i) => {
+    const m = p.match(/^\*\*([^*]+)\*\*$/);
+    if (m) return <mark key={i} className="clause-highlight">{m[1]}</mark>;
+    return <span key={i}>{p}</span>;
+  });
+}
+
+// 근거자료(KB·법률·약관) 텍스트의 `**X**` markdown 마크를 단순 X로 정리.
+// 형광펜 처리하지 않고 평문으로만 표시 — 항 번호 등 구조적 강조라 시각적 의미 없음.
+function stripMdMarks(text) {
+  if (!text) return "";
+  return String(text).replace(/\*\*([^*]+)\*\*/g, "$1");
+}
+
+// KB 매칭 사례 전문 보기 모달 — 사이드 패널의 좁은 비교 박스에서 클릭 시 띄움.
+// 카테고리·source·유사도·전문(메타 섹션 포함) 모두 표시.
+function KbDetailModal({ reference, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  if (!reference) return null;
+  const sim = Math.round((reference.similarity || 0) * 100);
+  const fullText = reference.text || "";
+  return (
+    <div className="ref-modal-overlay" onClick={onClose}>
+      <div className="ref-modal kb-detail-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="ref-modal-header">
+          <h2 className="ref-modal-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+              <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+            </svg>
+            KB 매칭 사례 전문
+          </h2>
+          <button type="button" className="ref-modal-close" onClick={onClose} aria-label="닫기">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div className="kb-detail-meta">
+          <span className="kb-detail-meta-item"><span className="kb-detail-meta-label">출처</span> {reference.source || "unknown"}</span>
+          <span className="kb-detail-meta-item"><span className="kb-detail-meta-label">유사도</span> {sim}%</span>
+          {reference.article && (
+            <span className="kb-detail-meta-item"><span className="kb-detail-meta-label">조문</span> {reference.article}</span>
+          )}
+        </div>
+        <div className="ref-modal-body">
+          <div className="kb-detail-text">{stripMdMarks(fullText)}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// references_detail의 metadata.source를 4분류로 그룹핑.
+// 카테고리별 분류 + 시각적 강도 표시(유사도 막대)로 "어떤 근거가 강한지"를 직관적으로 전달.
+const REF_CATEGORIES = [
+  { key: "law", label: "법률", icon: "法",
+    sources: ["law", "민법", "주택임대차보호법", "근로기준법", "약관규제법/판례",
+              "상가건물임대차보호법", "근로자퇴직급여보장법", "최저임금법", "이자제한법",
+              "공인중개사법", "민사집행법", "건설산업기본법", "하도급거래공정화에관한법률"] },
+  { key: "judgment", label: "판례", icon: "判",
+    sources: ["precedent_kr", "aihub_판결문", "판례/실무"] },
+  { key: "safe_clause", label: "표준약관", icon: "標",
+    sources: ["safe_clause", "실무"] },
+  { key: "unfair_clause", label: "불공정약관", icon: "違",
+    sources: ["unfair_clause"] },
+];
+
+function categorizeReference(ref) {
+  const src = (ref?.source || "").trim();
+  for (const cat of REF_CATEGORIES) {
+    if (cat.sources.includes(src)) return cat.key;
+  }
+  return "law"; // default
+}
+
+function groupReferencesByCategory(references) {
+  const grouped = { law: [], judgment: [], safe_clause: [], unfair_clause: [] };
+  for (const ref of references || []) {
+    const cat = categorizeReference(ref);
+    grouped[cat].push(ref);
+  }
+  // 카테고리 안에서 유사도 내림차순 정렬
+  for (const k of Object.keys(grouped)) {
+    grouped[k].sort((a, b) => (b.similarity || 0) - (a.similarity || 0));
+  }
+  return grouped;
+}
+
+// 카테고리별 그룹된 참고문헌 패널 + 유사도 막대 시각화.
+// "법률·판례·표준약관·불공정약관" 4분류 + 유사도 % 막대로 어떤 근거가 강한지 한눈에.
+// 각 항목 클릭 시 KbDetailModal로 전문 보기 가능.
+function GroupedReferencesPanel({ references }) {
+  const [activeRef, setActiveRef] = useState(null);
+  if (!references || references.length === 0) return null;
+  const grouped = groupReferencesByCategory(references);
+
+  return (
+    <>
+      <div className="ref-grouped">
+        {REF_CATEGORIES.map((cat) => {
+          const items = grouped[cat.key];
+          if (!items || items.length === 0) return null;
+          return (
+            <div key={cat.key} className={`ref-grouped-cat ref-grouped-cat-${cat.key}`}>
+              <div className="ref-grouped-header">
+                <span className="ref-grouped-icon">{cat.icon}</span>
+                <span className="ref-grouped-label">{cat.label}</span>
+                <span className="ref-grouped-count">{items.length}건</span>
+              </div>
+              <ul className="ref-grouped-list">
+                {items.map((ref, i) => {
+                  const sim = Math.round((ref.similarity || 0) * 100);
+                  const text = (ref.text || "").replace(/^\[[^\]]+\]\s*/, "");
+                  const preview = text.slice(0, 200);
+                  return (
+                    <li key={i} className="ref-grouped-item">
+                      <button
+                        type="button"
+                        className="ref-grouped-item-btn"
+                        onClick={() => setActiveRef(ref)}
+                        title="클릭하여 전문 보기"
+                      >
+                        <div className="ref-grouped-bar-wrap" title={`유사도 ${sim}%`}>
+                          <div className="ref-grouped-bar-track">
+                            <div
+                              className="ref-grouped-bar"
+                              style={{ width: `${Math.max(2, sim)}%` }}
+                            />
+                          </div>
+                          <span className="ref-grouped-pct">{sim}%</span>
+                        </div>
+                        <p className="ref-grouped-text">
+                          {stripMdMarks(preview)}
+                          {text.length > 200 ? "…" : ""}
+                        </p>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+      {activeRef && (
+        <KbDetailModal reference={activeRef} onClose={() => setActiveRef(null)} />
+      )}
+    </>
+  );
+}
+
+// KB 매칭 사례에서 본 조항(userQuote)과 가장 유사한 문장을 찾는다.
+// 한국어 2-gram 오버랩 기반 단순 스코어링 — 의미적 매칭은 아니지만 어휘 중복 가장 높은 문장을 선택.
+// 이렇게 찾은 문장에 형광펜을 칠하면 양쪽에서 같은 패턴이 시각적으로 매칭됨.
+function findBestMatchingKbSentence(userQuote, kbRawText) {
+  if (!kbRawText) return null;
+  const noLabel = kbRawText.replace(/^\[[^\]]+\]\s*/, "");
+  // 메타 섹션(판단근거·관련법령) 이후는 매칭 대상에서 제외 — 약관 본문만 사용
+  let body = noLabel;
+  for (const meta of ["판단근거:", "관련법령:", "관련법령 :"]) {
+    const idx = body.indexOf(meta);
+    if (idx > 0) body = body.slice(0, idx);
+  }
+  // 문장 분리 — 마침표·줄바꿈·세미콜론 기준
+  const sentences = body
+    .split(/[.\n;]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 12 && s.length <= 280);
+  if (sentences.length === 0) return null;
+  // userQuote가 없으면 가장 긴 문장 반환 (대표 문장)
+  if (!userQuote || userQuote.length < 4) {
+    return sentences.reduce((a, b) => (a.length >= b.length ? a : b));
+  }
+  // 사용자 인용문에서 2-gram 추출
+  const userBigrams = new Set();
+  const cleanQuote = userQuote.replace(/\s+/g, "");
+  for (let i = 0; i < cleanQuote.length - 1; i++) {
+    userBigrams.add(cleanQuote.slice(i, i + 2));
+  }
+  // 각 KB 문장 스코어링
+  let best = null;
+  let bestScore = 0;
+  for (const sent of sentences) {
+    const cleanSent = sent.replace(/\s+/g, "");
+    let score = 0;
+    for (let i = 0; i < cleanSent.length - 1; i++) {
+      if (userBigrams.has(cleanSent.slice(i, i + 2))) score++;
+    }
+    // 매우 짧은 문장의 우연 매칭 방지를 위해 길이로 정규화
+    const normalized = score / Math.max(20, cleanSent.length);
+    if (normalized > bestScore) {
+      bestScore = normalized;
+      best = sent;
+    }
+  }
+  // 최소 매칭 임계값 — 너무 약하면 첫 문장(대표)
+  if (bestScore < 0.05) return sentences[0];
+  return best;
+}
+
+// 본 조항 quote ↔ 가장 유사한 KB 매칭 사례를 나란히 보여주는 evidence 패널.
+// 좁은 사이드 패널에 맞춘 세로 스택 + 양쪽 형광펜 + 가운데 연결 화살표 구조.
+// KB 블록 클릭 시 전문 모달이 열려 메타 섹션·전체 본문을 확인 가능.
+function EvidenceComparisonPanel({ analysis }) {
+  const [detailOpen, setDetailOpen] = useState(false);
+  if (!analysis) return null;
+  const refs = analysis.references_detail || [];
+  if (refs.length === 0) return null;
+
+  // 위험 판정 시: unfair_clause 중 최고 유사도 / 안전 판정 시: law 또는 safe_clause 중 최고
+  const isRisky = analysis.risk_level === "high" || analysis.risk_level === "medium";
+  const targetCats = isRisky ? ["unfair_clause"] : ["law", "safe_clause"];
+  const candidates = refs.filter((r) => targetCats.includes(categorizeReference(r)));
+  if (candidates.length === 0) return null;
+  const bestMatch = candidates.reduce(
+    (best, r) => (!best || (r.similarity || 0) > (best.similarity || 0) ? r : best),
+    null
+  );
+  if (!bestMatch) return null;
+
+  // 본 조항의 위험 quote
+  const risks = analysis.risks || [];
+  const quote = risks.find((r) => r.quote)?.quote || "";
+  const sim = Math.round((bestMatch.similarity || 0) * 100);
+
+  // KB 사례 본문에서 본 조항 quote와 가장 유사한 문장을 찾아 형광펜 대상으로 사용
+  // 단순 첫 문장이 아니라 어휘 매칭이 가장 강한 문장을 골라야 시각적 비교가 의미 있음
+  const kbHighlight = findBestMatchingKbSentence(quote, bestMatch.text || "");
+  const kbFullNoLabel = (bestMatch.text || "")
+    .replace(/^\[[^\]]+\]\s*/, "")
+    .split(/(?:판단근거:|관련법령:)/)[0]
+    .trim();
+  // KB 본문에서 highlight 부분을 분리해 prefix/match/suffix 렌더링
+  let kbBefore = "";
+  let kbMatch = "";
+  let kbAfter = "";
+  if (kbHighlight) {
+    const idx = kbFullNoLabel.indexOf(kbHighlight);
+    if (idx >= 0) {
+      kbBefore = kbFullNoLabel.slice(0, idx);
+      kbMatch = kbHighlight;
+      kbAfter = kbFullNoLabel.slice(idx + kbHighlight.length);
+    } else {
+      kbMatch = kbFullNoLabel.slice(0, 240);
+    }
+  } else {
+    kbMatch = kbFullNoLabel.slice(0, 240);
+  }
+  // 매칭 문장 양옆 컨텍스트 길이 제한 — 좁은 패널에 맞게 짧게
+  const kbBeforeTrim = kbBefore.length > 50 ? "…" + kbBefore.slice(-50) : kbBefore;
+  const kbAfterTrim = kbAfter.length > 80 ? kbAfter.slice(0, 80) + "…" : kbAfter;
+
+  return (
+    <>
+      <div className={`evidence-compare evidence-compare-${isRisky ? "risk" : "safe"}`}>
+        {/* 본 조항 */}
+        <div className="evidence-compare-block">
+          <div className="evidence-compare-block-header">
+            <span className="evidence-compare-label">본 조항 (위험 부분)</span>
+          </div>
+          <div className="evidence-compare-doc">
+            {quote ? (
+              <span>
+                <mark className="clause-highlight">{stripMdMarks(quote)}</mark>
+              </span>
+            ) : (
+              <span>{stripMdMarks((analysis.clause_content || "").slice(0, 200))}</span>
+            )}
+          </div>
+        </div>
+
+        {/* 가운데 연결 — 매칭 정보 */}
+        <div className="evidence-compare-connector">
+          <span className="evidence-compare-connector-line" />
+          <span className="evidence-compare-connector-info">
+            <span className="evidence-compare-sim">{sim}% 유사</span>
+            <span className="evidence-compare-tag">
+              {isRisky ? "불공정 패턴" : "정형 표현"}
+            </span>
+          </span>
+          <span className="evidence-compare-connector-line" />
+        </div>
+
+        {/* KB 매칭 사례 — 클릭 시 전문 모달 */}
+        <button
+          type="button"
+          className="evidence-compare-block evidence-compare-block-clickable"
+          onClick={() => setDetailOpen(true)}
+          title="클릭하여 전문 보기"
+        >
+          <div className="evidence-compare-block-header">
+            <span className="evidence-compare-label">
+              KB 매칭 [{bestMatch.source || "unknown"}]
+            </span>
+            <span className="evidence-compare-block-action">전문 보기 →</span>
+          </div>
+          <div className="evidence-compare-doc evidence-compare-doc-kb">
+            {kbBeforeTrim && <span>{stripMdMarks(kbBeforeTrim)}</span>}
+            {kbMatch && <mark className="clause-highlight">{stripMdMarks(kbMatch)}</mark>}
+            {kbAfterTrim && <span>{stripMdMarks(kbAfterTrim)}</span>}
+          </div>
+        </button>
+      </div>
+      {detailOpen && (
+        <KbDetailModal reference={bestMatch} onClose={() => setDetailOpen(false)} />
+      )}
+    </>
+  );
+}
+
+// explanation에서 LLM이 작은따옴표·큰따옴표로 직접 인용한 조항 문구를 추출한다.
+// 추출된 문구를 조항 본문(clause_content)에서 찾아 <mark>로 감싸 형광펜 효과를 주기 위한 helper.
+// 5자 이상 200자 이하 인용만 허용 (너무 짧으면 일반 단어, 너무 길면 줄바꿈·노이즈 가능).
+const _QUOTE_REGEXES = [
+  /'([^']{5,200})'/g,
+  /‘([^’]{5,200})’/g,
+  /"([^"]{5,200})"/g,
+  /“([^”]{5,200})”/g,
+];
+
+function extractQuotedSnippets(explanation) {
+  if (!explanation) return [];
+  const set = new Set();
+  for (const re of _QUOTE_REGEXES) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(explanation)) !== null) {
+      const s = m[1].trim();
+      if (s.length >= 5) set.add(s);
+    }
+  }
+  return [...set];
+}
+
+// 조항 본문에 형광펜 효과로 위험 부분을 강조해 렌더링.
+// 우선순위: (1) risks[].quote — LLM이 명시적으로 발췌한 위험 부분 (가장 신뢰)
+//         (2) explanation 내 작은따옴표 인용 — 폴백
+// 둘 다 본문 정확 substring일 때만 <mark>로 감싸서 false-positive 방지.
+function ClauseTextHighlighted({ content, explanation, risks, enabled }) {
+  if (!enabled || !content) {
+    return <p className="doc-clause-text">{content || ""}</p>;
+  }
+  // 1차: risks[].quote 사용
+  const quoteSet = new Set();
+  if (Array.isArray(risks)) {
+    for (const r of risks) {
+      const q = r && typeof r.quote === "string" ? r.quote.trim() : "";
+      if (q.length >= 4) quoteSet.add(q);
+    }
+  }
+  // 2차: explanation에서 작은따옴표 인용 (폴백)
+  if (quoteSet.size === 0 && explanation) {
+    extractQuotedSnippets(explanation).forEach((s) => quoteSet.add(s));
+  }
+  const snippets = [...quoteSet];
+  if (snippets.length === 0) {
+    return <p className="doc-clause-text">{content}</p>;
+  }
+  // 긴 문구부터 매칭해야 짧은 문구가 긴 문구 안에 흡수되는 중복을 막는다.
+  const sorted = [...snippets].sort((a, b) => b.length - a.length);
+  const matches = [];
+  for (const snippet of sorted) {
+    let from = 0;
+    while (from < content.length) {
+      const idx = content.indexOf(snippet, from);
+      if (idx < 0) break;
+      const end = idx + snippet.length;
+      const overlaps = matches.some((m) => !(end <= m.start || idx >= m.end));
+      if (!overlaps) matches.push({ start: idx, end, text: snippet });
+      from = end;
+    }
+  }
+  if (matches.length === 0) {
+    return <p className="doc-clause-text">{content}</p>;
+  }
+  matches.sort((a, b) => a.start - b.start);
+
+  const parts = [];
+  let cursor = 0;
+  matches.forEach((m, i) => {
+    if (m.start > cursor) {
+      parts.push(<span key={`t${i}`}>{content.slice(cursor, m.start)}</span>);
+    }
+    parts.push(
+      <mark key={`m${i}`} className="clause-highlight" title="LLM이 explanation에서 직접 인용한 부분">
+        {m.text}
+      </mark>
+    );
+    cursor = m.end;
+  });
+  if (cursor < content.length) {
+    parts.push(<span key="tail">{content.slice(cursor)}</span>);
+  }
+  return <p className="doc-clause-text">{parts}</p>;
+}
+
+// explanation의 [참고N] 토큰을 클릭 가능한 인용 뱃지로 변환.
+// 클릭 시 references_detail[N-1]의 실제 본문을 보여줘 LLM 인용과 RAG 자료를 직접 대조 가능하게 한다.
+// (LLM 환각으로 조문번호 등이 변형되는 경우를 사용자가 즉시 검증할 수 있게 하는 신뢰성 장치)
+function ExplanationWithCitations({ explanation, references }) {
+  const [activeIdx, setActiveIdx] = useState(null);
+  if (!explanation) return null;
+  const refs = references || [];
+  const parts = explanation.split(/(\[참고\d+\])/g);
+  return (
+    <>
+      <p className="ref-explanation">
+        {parts.map((part, i) => {
+          const match = part.match(/^\[참고(\d+)\]$/);
+          if (!match) return part;
+          const refIdx = parseInt(match[1], 10) - 1;
+          const ref = refs[refIdx];
+          if (!ref) {
+            return <span key={i} className="citation-missing">{part}</span>;
+          }
+          const isActive = activeIdx === refIdx;
+          return (
+            <button
+              key={i}
+              type="button"
+              className={`citation-badge${isActive ? " citation-badge-active" : ""}`}
+              onClick={() => setActiveIdx(isActive ? null : refIdx)}
+              title="클릭하여 실제 참고 자료 확인"
+            >
+              {part}
+            </button>
+          );
+        })}
+      </p>
+      {activeIdx !== null && refs[activeIdx] && (
+        <div className="citation-popup">
+          <div className="citation-popup-header">
+            <span className="citation-popup-num">[참고{activeIdx + 1}]</span>
+            <span className="citation-popup-source">
+              {refs[activeIdx].source || "unknown"}
+              {refs[activeIdx].similarity != null
+                ? ` · 유사도 ${refs[activeIdx].similarity.toFixed(2)}`
+                : ""}
+            </span>
+            <button
+              type="button"
+              className="citation-popup-close"
+              onClick={() => setActiveIdx(null)}
+              aria-label="닫기"
+            >
+              ×
+            </button>
+          </div>
+          <div className="citation-popup-body">{stripMdMarks(refs[activeIdx].text)}</div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function ExportPanel({ analysisId }) {
   if (!analysisId) return null;
   const handleDownload = (fmt) => {
@@ -68,7 +544,8 @@ function SummaryRenderer({ text }) {
           className={`dash-summary-section ${sec.label === "분석 통계" ? "dash-summary-stats" : ""}`}
         >
           {sec.label && <h4 className="dash-summary-label">{sec.label}</h4>}
-          <p className="dash-summary-body">{sec.body}</p>
+          {/* LLM이 종합 요약·권고사항에서 강조한 부분(`**X**`)은 형광펜으로 표시 */}
+          <p className="dash-summary-body">{renderWithMdMarks(sec.body)}</p>
         </div>
       ))}
     </div>
@@ -105,6 +582,104 @@ function parseSummarySections(text) {
 }
 
 // 종합 요약 + 위험도 원그래프 + 카테고리 카운트 — 대시보드 헤드.
+// KPI 카드 한 줄 — 대시보드 첫인상의 핵심.
+// 큰 숫자 + 작은 라벨 + 미세한 컨텍스트로 5초 안에 핵심 파악 가능.
+function KpiCardsRow({ result, counts, totalRefs }) {
+  const total = result.clause_analyses.length;
+  const risky = counts.high + counts.medium + counts.low;
+  const riskRate = total > 0 ? Math.round((risky / total) * 100) : 0;
+  const userOverrides = result.clause_analyses.filter((c) => c.user_override).length;
+  return (
+    <div className="kpi-row">
+      <div className="kpi-card">
+        <div className="kpi-num">{total}</div>
+        <div className="kpi-label">전체 조항</div>
+        <div className="kpi-sub">분석 완료</div>
+      </div>
+      <div className="kpi-card kpi-card-warn">
+        <div className="kpi-num">{risky}</div>
+        <div className="kpi-label">위험 조항</div>
+        <div className="kpi-sub">법률 위반·계약자 불리</div>
+      </div>
+      <div className="kpi-card">
+        <div className="kpi-num">{riskRate}<span className="kpi-num-unit">%</span></div>
+        <div className="kpi-label">위험 비율</div>
+        <div className="kpi-sub">전체 대비</div>
+      </div>
+      <div className="kpi-card">
+        <div className="kpi-num">{totalRefs}</div>
+        <div className="kpi-label">근거 자료</div>
+        <div className="kpi-sub">법률·판례·약관</div>
+      </div>
+      <div className="kpi-card kpi-card-success">
+        <div className="kpi-num">{userOverrides}</div>
+        <div className="kpi-label">수정안 적용</div>
+        <div className="kpi-sub">사용자 편집</div>
+      </div>
+    </div>
+  );
+}
+
+// 위험 분포 히트맵 — 조항 번호별로 색상 박스. 한 줄로 전체 위험 분포 시각화.
+// 클릭 시 해당 조항으로 점프. 조항 위에 hover 시 제목 툴팁.
+function RiskHeatmapBar({ clauseAnalyses, onScrollToClause }) {
+  if (!clauseAnalyses || clauseAnalyses.length === 0) return null;
+  const sorted = [...clauseAnalyses].sort((a, b) => a.clause_index - b.clause_index);
+  return (
+    <div className="risk-heatmap">
+      <div className="risk-heatmap-label">위험 분포 맵</div>
+      <div className="risk-heatmap-bar">
+        {sorted.map((c) => (
+          <button
+            key={c.clause_index}
+            type="button"
+            className={`risk-heatmap-cell risk-heatmap-cell-${c.risk_level}`}
+            onClick={() => onScrollToClause(c.clause_index)}
+            title={`제${c.clause_index}조 ${c.clause_title}`}
+          >
+            <span className="risk-heatmap-num">{c.clause_index}</span>
+          </button>
+        ))}
+      </div>
+      <div className="risk-heatmap-legend">
+        <span className="risk-heatmap-legend-item"><span className="risk-heatmap-dot risk-heatmap-cell-high" />법률 위반</span>
+        <span className="risk-heatmap-legend-item"><span className="risk-heatmap-dot risk-heatmap-cell-medium" />계약자 불리</span>
+        <span className="risk-heatmap-legend-item"><span className="risk-heatmap-dot risk-heatmap-cell-low" />검토 권장</span>
+        <span className="risk-heatmap-legend-item"><span className="risk-heatmap-dot risk-heatmap-cell-safe" />안전</span>
+      </div>
+    </div>
+  );
+}
+
+// 위험 유형 Top 3 카드 — 가장 자주 나타나는 risk_type 분포.
+function RiskTypeBreakdown({ clauseAnalyses }) {
+  const typeCount = useMemo(() => {
+    const m = new Map();
+    for (const ca of clauseAnalyses) {
+      if (ca.risk_level === "safe") continue;
+      for (const r of ca.risks || []) {
+        const t = (r.risk_type || "기타").trim();
+        m.set(t, (m.get(t) || 0) + 1);
+      }
+    }
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+  }, [clauseAnalyses]);
+  if (typeCount.length === 0) return null;
+  return (
+    <div className="risk-type-breakdown">
+      <div className="risk-type-label">자주 나타난 위험 유형</div>
+      <div className="risk-type-cards">
+        {typeCount.map(([type, count]) => (
+          <div key={type} className="risk-type-card">
+            <span className="risk-type-name">{type.replace(/_/g, " ")}</span>
+            <span className="risk-type-count">{count}건</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function OverviewDashboard({ result, counts, aggregated, onScrollToClause, onOpenRefs }) {
   const refStats = {
     law: aggregated.law.length,
@@ -168,7 +743,7 @@ function OverviewDashboard({ result, counts, aggregated, onScrollToClause, onOpe
           )}
         </div>
 
-        {/* 위험도 원그래프 */}
+        {/* 위험도 원그래프 + 조항별 히트맵 (정보 보완 관계로 같은 카드에 통합) */}
         <div className="dash-card dash-card-chart">
           <div className="dash-card-header">
             <span className="dash-card-icon">
@@ -180,6 +755,12 @@ function OverviewDashboard({ result, counts, aggregated, onScrollToClause, onOpe
             <h3>위험도 분포</h3>
           </div>
           <RiskPieChart counts={counts} />
+          {/* 도넛 아래 — 히트맵 + 위험 유형 Top3 (좁은 카드라 세로 stack) */}
+          <RiskHeatmapBar
+            clauseAnalyses={result.clause_analyses}
+            onScrollToClause={onScrollToClause}
+          />
+          <RiskTypeBreakdown clauseAnalyses={result.clause_analyses} />
         </div>
 
         {/* 참고자료 카운트 */}
@@ -474,21 +1055,20 @@ function RefItem({ item, onCitedClick }) {
   );
 }
 
-function RewriteEditor({ analysisId, analysis, onUpdated }) {
-  const initial = analysis.user_override ?? analysis.suggested_rewrite ?? "";
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(initial);
+// 권고안 편집 — 가운데 정렬 모달 + 슬라이드 인 애니메이션 (ref-modal 패턴 재사용).
+// 인라인 편집은 좁아서 큰 textarea + 원문 비교 UX 어려우므로 별도 모달로 분리.
+function RewriteEditDrawer({ analysisId, analysis, onClose, onSaved }) {
+  const initialDraft = analysis.user_override ?? analysis.suggested_rewrite ?? "";
+  const [draft, setDraft] = useState(initialDraft);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const orig = analysis.clause_content || "";
 
   useEffect(() => {
-    setEditing(false);
-    setDraft(analysis.user_override ?? analysis.suggested_rewrite ?? "");
-    setError(null);
-  }, [analysis.clause_index, analysis.user_override, analysis.suggested_rewrite]);
-
-  const isUserModified = !!analysis.user_override;
-  const hasSuggestion = !!analysis.suggested_rewrite;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   const handleSave = async () => {
     if (!analysisId) return;
@@ -501,14 +1081,100 @@ function RewriteEditor({ analysisId, analysis, onUpdated }) {
     setError(null);
     try {
       const updated = await updateClauseOverride(analysisId, analysis.clause_index, trimmed);
-      onUpdated(updated);
-      setEditing(false);
+      onSaved(updated);
     } catch (e) {
       setError(e.response?.data?.detail || e.message || "저장 실패");
-    } finally {
       setSaving(false);
     }
   };
+
+  const charCount = (draft || "").length;
+  const lineCount = (draft || "").split("\n").length;
+  const diff = charCount - orig.length;
+
+  return (
+    <div className="ref-modal-overlay" onClick={onClose}>
+      <div className="ref-modal rewrite-edit-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="권고안 편집">
+        <header className="ref-modal-header">
+          <div className="rewrite-drawer-title">
+            <span className="rewrite-drawer-eyebrow">권고안 편집</span>
+            <h3 className="rewrite-drawer-clause">제{analysis.clause_index}조 {analysis.clause_title}</h3>
+          </div>
+          <button
+            type="button"
+            className="ref-modal-close"
+            onClick={onClose}
+            aria-label="닫기"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </header>
+        <div className="ref-modal-body rewrite-edit-modal-body">
+          <section className="rewrite-drawer-section">
+            <h4 className="rewrite-drawer-section-label">원문 ({orig.length}자)</h4>
+            <pre className="rewrite-drawer-orig">{orig}</pre>
+          </section>
+          <section className="rewrite-drawer-section">
+            <h4 className="rewrite-drawer-section-label">수정안</h4>
+            <textarea
+              className="rewrite-drawer-textarea"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="수정안을 입력하세요"
+              disabled={saving}
+              autoFocus
+            />
+            <div className="rewrite-drawer-meta">
+              <span>{charCount}자 · {lineCount}줄</span>
+              {orig && (
+                <span className={diff < 0 ? "rewrite-meta-shorter" : "rewrite-meta-longer"}>
+                  원문 대비 {diff > 0 ? "+" : ""}{diff}자
+                </span>
+              )}
+            </div>
+          </section>
+          {error && <p className="rewrite-drawer-error">{error}</p>}
+        </div>
+        <footer className="rewrite-edit-modal-footer">
+          <button
+            type="button"
+            className="rewrite-btn"
+            onClick={onClose}
+            disabled={saving}
+          >
+            취소
+          </button>
+          <button
+            type="button"
+            className="rewrite-btn rewrite-btn-primary"
+            onClick={handleSave}
+            disabled={saving}
+          >
+            {saving ? "저장 중…" : "저장"}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function RewriteEditor({ analysisId, analysis, onUpdated }) {
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const [showOriginal, setShowOriginal] = useState(false);
+
+  useEffect(() => {
+    setDrawerOpen(false);
+    setError(null);
+    setShowOriginal(false);
+  }, [analysis.clause_index, analysis.user_override, analysis.suggested_rewrite]);
+
+  const isUserModified = !!analysis.user_override;
+  const hasSuggestion = !!analysis.suggested_rewrite;
 
   const handleRevert = async () => {
     if (!analysisId) return;
@@ -517,7 +1183,6 @@ function RewriteEditor({ analysisId, analysis, onUpdated }) {
     try {
       const updated = await updateClauseOverride(analysisId, analysis.clause_index, null);
       onUpdated(updated);
-      setEditing(false);
     } catch (e) {
       setError(e.response?.data?.detail || e.message || "되돌리기 실패");
     } finally {
@@ -525,75 +1190,94 @@ function RewriteEditor({ analysisId, analysis, onUpdated }) {
     }
   };
 
-  const handleCancel = () => {
-    setDraft(analysis.user_override ?? analysis.suggested_rewrite ?? "");
-    setEditing(false);
-    setError(null);
+  const handleSaved = (updated) => {
+    onUpdated(updated);
+    setDrawerOpen(false);
   };
 
   const displayText = analysis.user_override ?? analysis.suggested_rewrite ?? "";
-  if (!displayText && !editing) {
+  if (!displayText) {
     return (
-      <div className="ref-rewrite-empty">
-        <p>AI가 수정안을 생성하지 못했습니다. 직접 작성하실 수 있습니다.</p>
-        <button
-          type="button"
-          className="rewrite-edit-btn"
-          onClick={() => { setDraft(""); setEditing(true); }}
-        >
-          수정안 직접 작성
-        </button>
-      </div>
-    );
-  }
-
-  if (editing) {
-    return (
-      <div className="ref-rewrite ref-rewrite-editing">
-        <textarea
-          className="rewrite-editor-textarea"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          rows={Math.max(6, draft.split("\n").length + 1)}
-          placeholder="수정안을 입력하세요"
-          disabled={saving}
-        />
-        {error && <p className="rewrite-editor-error">{error}</p>}
-        <div className="rewrite-editor-actions">
-          <button type="button" className="rewrite-btn rewrite-btn-primary" onClick={handleSave} disabled={saving}>
-            {saving ? "저장 중..." : "저장"}
-          </button>
-          <button type="button" className="rewrite-btn" onClick={handleCancel} disabled={saving}>
-            취소
+      <>
+        <div className="ref-rewrite-empty">
+          <p>AI가 수정안을 생성하지 못했습니다. 직접 작성하실 수 있습니다.</p>
+          <button
+            type="button"
+            className="rewrite-edit-btn"
+            onClick={() => setDrawerOpen(true)}
+          >
+            ✎ 수정안 직접 작성
           </button>
         </div>
-      </div>
+        {drawerOpen && (
+          <RewriteEditDrawer
+            analysisId={analysisId}
+            analysis={analysis}
+            onClose={() => setDrawerOpen(false)}
+            onSaved={handleSaved}
+          />
+        )}
+      </>
     );
   }
 
+  const orig = analysis.clause_content || "";
   return (
     <div className="ref-rewrite">
-      {isUserModified && (
-        <div className="rewrite-source-badge rewrite-source-user">
-          사용자 직접 수정
-          {analysis.user_override_at && (
-            <span className="rewrite-source-time"> · {new Date(analysis.user_override_at).toLocaleString("ko-KR")}</span>
-          )}
+      <div className="rewrite-header-row">
+        {isUserModified ? (
+          <span className="rewrite-source-badge rewrite-source-user">
+            사용자 직접 수정
+            {analysis.user_override_at && (
+              <span className="rewrite-source-time"> · {new Date(analysis.user_override_at).toLocaleString("ko-KR")}</span>
+            )}
+          </span>
+        ) : (
+          <span className="rewrite-source-badge rewrite-source-ai">
+            AI 권고안 (RAG 근거 기반)
+          </span>
+        )}
+        <button
+          type="button"
+          className="rewrite-toggle-original"
+          onClick={() => setShowOriginal((v) => !v)}
+          title={showOriginal ? "원문 숨기기" : "원문과 비교"}
+        >
+          {showOriginal ? "원문 숨기기" : "원문 비교"}
+        </button>
+      </div>
+
+      {showOriginal && orig && (
+        <div className="rewrite-compare">
+          <div className="rewrite-compare-side">
+            <span className="rewrite-compare-label">원문 ({orig.length}자)</span>
+            <pre className="rewrite-compare-text rewrite-compare-text-orig">{orig}</pre>
+          </div>
+          <div className="rewrite-compare-arrow">↓</div>
+          <div className="rewrite-compare-side">
+            <span className="rewrite-compare-label">수정안 ({displayText.length}자, {displayText.length - orig.length > 0 ? "+" : ""}{displayText.length - orig.length})</span>
+            <pre className="rewrite-compare-text rewrite-compare-text-new">{stripMdMarks(displayText)}</pre>
+          </div>
         </div>
       )}
-      <pre className="ref-rewrite-text">{displayText}</pre>
+
+      {!showOriginal && (
+        <pre className="ref-rewrite-text">{stripMdMarks(displayText)}</pre>
+      )}
+
       <p className="ref-rewrite-note">
         {isUserModified
           ? "사용자가 직접 입력한 수정안입니다. 다운로드 파일에 반영됩니다."
           : "표준약관·관련 법률을 근거로 한 AI 생성 수정안입니다. 실제 적용 전 검토가 필요합니다."}
       </p>
+      {error && <p className="rewrite-editor-error">{error}</p>}
       <div className="rewrite-editor-actions">
         <button
           type="button"
-          className="rewrite-btn"
-          onClick={() => { setDraft(displayText); setEditing(true); }}
+          className="rewrite-btn rewrite-btn-primary"
+          onClick={() => setDrawerOpen(true)}
         >
-          {isUserModified ? "수정" : (hasSuggestion ? "권고안 편집" : "수정안 작성")}
+          {isUserModified ? "✎ 수정" : (hasSuggestion ? "✎ 권고안 편집" : "✎ 수정안 작성")}
         </button>
         {isUserModified && (
           <button
@@ -606,6 +1290,14 @@ function RewriteEditor({ analysisId, analysis, onUpdated }) {
           </button>
         )}
       </div>
+      {drawerOpen && (
+        <RewriteEditDrawer
+          analysisId={analysisId}
+          analysis={analysis}
+          onClose={() => setDrawerOpen(false)}
+          onSaved={handleSaved}
+        />
+      )}
     </div>
   );
 }
@@ -642,6 +1334,9 @@ function ReferencePanel({ analysisId, analysis, onAnalysisUpdated }) {
       </div>
 
       <div className="ref-panel-body">
+        {/* 본 조항 ↔ KB 사례 시각적 비교 — 판단 근거를 가장 직접적으로 시각화 */}
+        <EvidenceComparisonPanel analysis={analysis} />
+
         {analysis.explanation && (
           <section className="ref-section">
             <h3 className="ref-section-label">
@@ -652,7 +1347,10 @@ function ReferencePanel({ analysisId, analysis, onAnalysisUpdated }) {
               </svg>
               분석 요약
             </h3>
-            <p className="ref-explanation">{analysis.explanation}</p>
+            <ExplanationWithCitations
+              explanation={analysis.explanation}
+              references={analysis.references_detail}
+            />
           </section>
         )}
 
@@ -707,16 +1405,9 @@ function ReferencePanel({ analysisId, analysis, onAnalysisUpdated }) {
                 <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
                 <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
               </svg>
-              관련 판례 · 법률 ({analysis.similar_references.length})
+              근거 자료 ({(analysis.references_detail || []).length}건, 카테고리별)
             </h3>
-            <div className="ref-law-items">
-              {analysis.similar_references.map((ref, i) => (
-                <div key={i} className="ref-law-item">
-                  <span className="ref-law-num">{i + 1}</span>
-                  <p>{ref}</p>
-                </div>
-              ))}
-            </div>
+            <GroupedReferencesPanel references={analysis.references_detail} />
           </section>
         )}
 
@@ -790,10 +1481,25 @@ export default function ResultPage() {
     [result]
   );
 
+  // "위험 조항만 보기" 필터 — UI/UX 개선안 #4 (위험 조항 빠른 탐색)
+  const [showRiskyOnly, setShowRiskyOnly] = useState(false);
+  const visibleClauses = useMemo(
+    () => (showRiskyOnly ? orderedClauses.filter((a) => a.risk_level !== "safe") : orderedClauses),
+    [orderedClauses, showRiskyOnly]
+  );
+
   const counts = useMemo(() => {
     const c = { high: 0, medium: 0, low: 0, safe: 0 };
     orderedClauses.forEach((a) => { c[a.risk_level] = (c[a.risk_level] || 0) + 1; });
     return c;
+  }, [orderedClauses]);
+
+  const riskyCount = counts.high + counts.medium + counts.low;
+  const totalCount = counts.high + counts.medium + counts.low + counts.safe;
+  const avgConfidence = useMemo(() => {
+    if (orderedClauses.length === 0) return 0;
+    const sum = orderedClauses.reduce((s, a) => s + (a.confidence || 0), 0);
+    return Math.round((sum / orderedClauses.length) * 100);
   }, [orderedClauses]);
 
   const aggregated = useMemo(
@@ -872,14 +1578,42 @@ export default function ResultPage() {
 
   return (
     <div className="result-page result-page-split">
-      <div className="result-top-bar">
-        <button className="back-button" onClick={() => navigate("/")}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
-          새 분석
-        </button>
-        <h2 className="result-filename">{result.filename}</h2>
+      {/* UI/UX 개선안 #1 — 상단 헤더 강화: 메타데이터 + 위험도 카운트 + 액션 버튼 */}
+      <div className="result-top-bar result-top-bar-v2">
+        <div className="result-top-back">
+          <button className="back-button" onClick={() => navigate("/")}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+            새 분석
+          </button>
+        </div>
+        <div className="result-top-meta">
+          <h2 className="result-filename">{result.filename}</h2>
+          <div className="result-meta-line">
+            <span className="result-meta-item">
+              {CONTRACT_TYPE_LABELS[result.contract_type] || "계약서"} ·
+            </span>
+            <span className="result-meta-item">{totalCount}개 조항 분석 완료 ·</span>
+            <span className="result-meta-item">평균 신뢰도 {avgConfidence}%</span>
+          </div>
+          <div className="result-meta-badges">
+            {counts.high > 0 && <span className="result-meta-badge meta-badge-high">법률 위반 {counts.high}건</span>}
+            {counts.medium > 0 && <span className="result-meta-badge meta-badge-medium">계약자 불리 {counts.medium}건</span>}
+            {counts.low > 0 && <span className="result-meta-badge meta-badge-low">검토 권장 {counts.low}건</span>}
+            <span className="result-meta-badge meta-badge-safe">안전 {counts.safe}건</span>
+          </div>
+        </div>
+        <div className="result-top-actions">
+          <button
+            type="button"
+            className={`top-action-btn${showRiskyOnly ? " top-action-btn-active" : ""}`}
+            onClick={() => setShowRiskyOnly((v) => !v)}
+            title="안전 조항을 숨기고 위험·검토 필요 조항만 표시"
+          >
+            {showRiskyOnly ? "전체 조항" : `위험 조항만 (${riskyCount})`}
+          </button>
+        </div>
       </div>
 
       <OverviewDashboard
@@ -906,10 +1640,12 @@ export default function ResultPage() {
               <polyline points="14 2 14 8 20 8" />
             </svg>
             <span>계약서 원문</span>
-            <span className="doc-viewer-count">{orderedClauses.length}개 조항</span>
+            <span className="doc-viewer-count">
+              {showRiskyOnly ? `${visibleClauses.length} / ${orderedClauses.length}개 조항 (필터)` : `${orderedClauses.length}개 조항`}
+            </span>
           </div>
           <div className="doc-viewer-body">
-            {orderedClauses.map((analysis) => {
+            {visibleClauses.map((analysis) => {
               const isSelected = selectedIdx === analysis.clause_index;
               const isRisky = analysis.risk_level !== "safe";
               const isUserEdited = !!analysis.user_override;
@@ -934,7 +1670,12 @@ export default function ResultPage() {
                     </div>
                   )}
                   <h4 className="doc-clause-title">{analysis.clause_title}</h4>
-                  <p className="doc-clause-text">{analysis.clause_content}</p>
+                  <ClauseTextHighlighted
+                    content={analysis.clause_content}
+                    explanation={analysis.explanation}
+                    risks={analysis.risks}
+                    enabled={isRisky}
+                  />
                 </div>
               );
             })}

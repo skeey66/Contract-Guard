@@ -1,4 +1,5 @@
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -97,6 +98,107 @@ def _categorize_source(source: str) -> str:
     return "law"
 
 
+_WS_NORM_RE = re.compile(r"\s+")
+
+# 위험 시그널 단어 — quote 폴백 자동 추출용 (도메인 중립).
+# LLM이 위험 판정했지만 quote 작성을 빠뜨린 경우, 본문에서 이 단어들 근처 문장을 추출해
+# 형광펜·증거 기반 검증의 폴백으로 사용한다.
+_RISK_SIGNAL_WORDS = (
+    # 부정·박탈
+    "없이", "없다", "없으며", "포기", "박탈", "거부",
+    # 일방성·재량
+    "전적으로", "단독", "일방", "일방적", "독단", "임의로", "마음대로",
+    # 즉시·강제
+    "즉시", "무조건", "절대", "전면",
+    # 책임 면제·배제
+    "면제", "배제", "면책",
+    # 법정 한도 초과
+    "초과", "한도",
+    # 비용 전가 (을이 부담·분담·충당)
+    "을이 부담", "을의 부담", "임차인이 부담", "임차인의 부담",
+    "전액 부담", "전부 부담", "전액", "분담한다", "분담하기로", "충당", "전가",
+    # 일방 결정·해석 권한
+    "갑이 결정", "갑이 단독", "갑의 단독", "임대인이 결정", "임대인의 단독",
+    "사업자가 결정", "사용자가 결정",
+    # 기한 박탈·제한
+    "공제", "유보", "무기한", "무제한", "박탈",
+    # 관할·소송 제약
+    "본사", "소재지", "지정", "전속관할",
+    # 일반화된 광범위 면책 표현
+    "어떠한 경우에도", "여하한 사유",
+)
+
+
+def _extract_risky_excerpt(content: str, max_len: int = 100) -> str | None:
+    """본문에서 위험 시그널 단어가 등장하는 문장을 추출.
+
+    LLM이 위험으로 판정했지만 quote를 작성하지 못한 경우의 폴백.
+    위험 시그널 단어가 본문에 등장할 때만 추출 (false-positive 차단).
+    매칭 실패 시 None을 반환하여 환각 차단을 그대로 진행.
+    """
+    if not content:
+        return None
+    sentences = re.split(r"[.。\n]", content)
+    for sent in sentences:
+        sent_strip = sent.strip()
+        if not sent_strip or len(sent_strip) < 10:
+            continue
+        if any(w in sent_strip for w in _RISK_SIGNAL_WORDS):
+            if len(sent_strip) <= max_len:
+                return sent_strip
+            return sent_strip[:max_len].rstrip(" ,·")
+    return None
+
+
+def _validate_quote(raw, clause_text: str) -> str | None:
+    """LLM이 출력한 quote가 본 조항 원문의 substring인지 검증한다.
+
+    LLM이 의역하거나 환각으로 본문에 없는 문구를 quote에 적으면 frontend의 형광펜이
+    매칭되지 않아 사용자에게 혼란을 준다. 정확한 substring일 때만 채택하고, 아니면
+    None으로 폴백하여 형광펜 표시를 생략한다 (잘못 칠하기보다 안 칠하기가 안전).
+
+    매칭 단계 (점진 완화):
+      1) 정확 substring
+      2) 공백 정규화 substring (줄바꿈·다중공백 차이만 있는 경우)
+      3) Prefix 폴백: LLM이 quote를 길게 출력하다가 토큰 한도로 끝부분이 잘리거나
+         의역으로 끝부분만 변형한 경우, 처음 N자가 본문에 있으면 그것만 채택.
+         (LLM 응답이 num_predict 한도에서 절단되는 케이스를 복구)
+    """
+    if not isinstance(raw, str):
+        return None
+    q = raw.strip()
+    if not q or not clause_text:
+        return None
+    if len(q) < 4:
+        return None
+
+    # 1단계: 정확 substring
+    if q in clause_text:
+        return q
+
+    # 2단계: 공백 정규화 후 substring
+    q_norm = _WS_NORM_RE.sub(" ", q)
+    text_norm = _WS_NORM_RE.sub(" ", clause_text)
+    if q_norm in text_norm:
+        return q_norm
+
+    # 3단계: Prefix 폴백 (긴 quote의 앞부분만 매칭되는 경우)
+    for cut in (120, 100, 80, 60, 40, 25):
+        if len(q) <= cut:
+            continue
+        prefix = q[:cut].rstrip(" ,.\"'·")
+        if len(prefix) < 15:
+            break
+        if prefix in clause_text:
+            return prefix
+        prefix_norm = _WS_NORM_RE.sub(" ", prefix)
+        if prefix_norm in text_norm:
+            return prefix_norm
+
+    logger.debug(f"quote 검증 실패 (본문에 없음): {q[:60]!r}")
+    return None
+
+
 def _normalize_risk_type(raw: str, valid_types: list[str]) -> str:
     """LLM이 반환한 risk_type을 유효한 유형으로 매핑."""
     raw_clean = raw.strip()
@@ -149,12 +251,53 @@ def _build_clause_analyses(
                     risk_type=_normalize_risk_type(r.get("risk_type", "unknown"), valid_risk_types) if valid_risk_types else r.get("risk_type", "unknown"),
                     description=r.get("description", ""),
                     suggestion=r.get("suggestion", ""),
+                    quote=_validate_quote(r.get("quote"), clause.content),
                 )
                 for r in raw_risks
                 if isinstance(r, dict)
             ]
             explanation = parsed.get("explanation", "")
             analysis_status = parsed.get("_status", "ok")
+
+            # 증거 기반 필터링 — quote 검증된 risks만 채택. quote 없으면 환각 가능성.
+            # 다만 LLM 비결정성으로 진짜 위험이 quote만 빠뜨려 잘못 차단될 수 있어
+            # 본문에서 위험 시그널 자동 추출 폴백으로 false-negative를 줄인다.
+            # 룰 기반 결과(_status="kb_high"/"kb_safe"/룰 매칭)는 신뢰성 검증된 출처라 예외.
+            llm_origin = analysis_status not in ("kb_high", "kb_safe", "missing")
+            if llm_origin and risk_level in (RiskLevel.HIGH, RiskLevel.MEDIUM):
+                # 1차: quote가 비어있는 risk에 대해 본문에서 위험 시그널 자동 추출 시도
+                for r in risks:
+                    if not (r.quote and r.quote.strip()):
+                        auto_quote = _extract_risky_excerpt(clause.content)
+                        if auto_quote:
+                            r.quote = auto_quote
+                            logger.debug(
+                                f"조항 {clause.index} quote 자동 폴백: {auto_quote[:60]!r}"
+                            )
+
+                # 2차: 폴백 후에도 quote 없는 risk는 환각으로 간주
+                substantiated = [r for r in risks if r.quote and r.quote.strip()]
+                if not substantiated and risks:
+                    # 위험으로 판정했는데 본문에 위험 시그널 단어조차 없음 → 환각으로 간주
+                    logger.info(
+                        f"조항 {clause.index} 환각 차단: 모든 risk가 quote 없음 (자동 폴백도 실패) → "
+                        f"{risk_level.value} → safe로 강등"
+                    )
+                    risk_level = RiskLevel.SAFE
+                    risks = []
+                    explanation = (
+                        "LLM이 위험으로 판단했으나 본문에서 직접 인용할 위험 부분을 "
+                        "제시하지 못해 (본문 명시 근거 부족) 안전 조항으로 판정합니다."
+                    )
+                    analysis_status = "evidence_filtered"
+                elif len(substantiated) < len(risks):
+                    # 일부만 환각인 경우, 증거 있는 risk만 유지
+                    removed = len(risks) - len(substantiated)
+                    logger.info(
+                        f"조항 {clause.index} 부분 환각 차단: {removed}개 risk 제거, "
+                        f"{len(substantiated)}개 유지"
+                    )
+                    risks = substantiated
         else:
             # index_map에도 없음 = chain이 완전히 누락한 조항 (이상 케이스)
             risk_level = RiskLevel.MEDIUM
