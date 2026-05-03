@@ -34,3 +34,6 @@ frontend/dist/
 .idea/
 *.swp
 *.swo
+
+# Local docs (session handoff, etc.)
+docs/SESSION_HANDOFF.md
