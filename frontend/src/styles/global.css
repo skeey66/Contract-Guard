@@ -34,10 +34,20 @@
   --risk-safe-bg: #f0faf4;
   --radius: 12px;
   --radius-sm: 8px;
-  --shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --radius-md: 11px;
+  --radius-lg: 18px;
+  --radius-pill: 9999px;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.08);
+  /* 강조 엠블럼·아이콘 회전체 전용 깊은 그림자 */
+  --shadow-product: 3px 5px 30px 0 rgba(0, 0, 0, 0.12);
   --transition: 0.2s ease;
   --max-w: 1040px;
+  /* Apple 식 typography 토큰 */
+  --fs-body: 17px;
+  --lh-body: 1.47;
+  --ls-display: -0.022em;
+  --ls-display-tight: -0.028em;
 }
 
 body {
@@ -46,8 +56,25 @@ body {
     system-ui, Roboto, "Helvetica Neue", "Segoe UI", "Noto Sans KR", sans-serif;
   background: var(--bg);
   color: var(--text);
-  line-height: 1.6;
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Apple 식 헤딩 톤 — negative letter-spacing + weight 600 */
+h1, h2, h3, h4 {
+  font-weight: 600;
+  letter-spacing: var(--ls-display);
+  line-height: 1.15;
+}
+h1 { letter-spacing: var(--ls-display-tight); }
+
+/* Apple 식 미세 인터랙션 — 모든 인터랙티브 요소에 active 시 살짝 축소 */
+button:active,
+.btn:active,
+[role="button"]:active {
+  transform: scale(0.97);
 }
 
 /* ===== 레이아웃 ===== */
@@ -743,6 +770,103 @@ body {
   50% { opacity: 0.6; }
 }
 
+/* ===== 분석 진행 표시 (UploadPage) ===== */
+.analysis-progress {
+  margin-top: 1.5rem;
+  padding: 1rem 1.25rem 1.1rem;
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  animation: fadeIn 0.4s ease;
+}
+
+.analysis-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 0.55rem;
+}
+
+.analysis-progress-pct {
+  font-size: 1.4rem;
+  font-weight: 600;
+  letter-spacing: var(--ls-display-tight);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.analysis-progress-elapsed {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.analysis-progress-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--border-light);
+  border-radius: 9999px;
+  overflow: hidden;
+  margin-bottom: 0.9rem;
+}
+
+.analysis-progress-bar-fill {
+  height: 100%;
+  background: var(--gold);
+  border-radius: 9999px;
+  transition: width 0.25s linear;
+}
+
+.analysis-progress-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.analysis-progress-step {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  transition: color 0.2s ease;
+}
+
+.analysis-progress-step-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.analysis-progress-step.is-active .analysis-progress-step-label,
+.analysis-progress-step.is-active .analysis-progress-step-mark {
+  color: var(--gold);
+}
+.analysis-progress-step.is-active .analysis-progress-step-mark {
+  animation: stepPulse 1.4s ease-in-out infinite;
+}
+
+.analysis-progress-step.is-done .analysis-progress-step-label {
+  color: var(--text-sub);
+}
+.analysis-progress-step.is-done .analysis-progress-step-mark {
+  color: var(--risk-safe);
+}
+
+@keyframes stepPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 /* 에러 */
 .error-message {
   margin-top: 1rem;
@@ -1242,25 +1366,25 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.75rem 1.75rem;
-  background: linear-gradient(135deg, var(--gold), var(--gold-light));
+  padding: 11px 22px;
+  background: var(--gold);
   color: #1a1a1a;
   border: none;
-  border-radius: 8px;
-  font-size: 0.9rem;
-  font-weight: 700;
+  border-radius: var(--radius-pill);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
-  box-shadow: 0 4px 16px rgba(197, 165, 90, 0.25);
+  transition: background 0.2s ease, transform 0.15s ease;
+  box-shadow: none;
 }
 
 .cta-button:hover {
-  transform: translateY(-2px) scale(1.03);
-  box-shadow: 0 8px 24px rgba(197, 165, 90, 0.35);
+  background: var(--gold-light);
 }
 
 .cta-button:active {
-  transform: translateY(0) scale(0.98);
+  transform: scale(0.96);
 }
 
 /* ===== 결과 페이지 (분할 레이아웃) ===== */
@@ -1531,10 +1655,7 @@ body {
   .risk-type-cards { grid-template-columns: 1fr; }
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   Result Top Bar V2 — UI/UX 개선안 #1: 메타데이터 + 위험도 배지 + 액션 버튼
-   "5초 안에 전체 위험도 파악, 다음 행동까지 한눈에"
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+/* Result Top Bar — 메타데이터 + 위험도 배지 + 액션 버튼 */
 .result-top-bar-v2 {
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -1673,6 +1794,80 @@ body {
   background: var(--gold);
   border-color: var(--gold);
   color: var(--white);
+}
+
+/* "위험 조항만" 토글 — 라벨(좌) + 토글(우) 분리 구조 */
+.risky-toggle-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.risky-toggle-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+  user-select: none;
+}
+
+.risky-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  line-height: 0;
+}
+
+.risky-toggle-track {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+  background: var(--border);
+  border-radius: 9999px;
+  flex-shrink: 0;
+  transition: background 0.2s ease;
+}
+.risky-toggle.is-on .risky-toggle-track {
+  background: var(--gold);
+}
+
+.risky-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: var(--white);
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.risky-toggle.is-on .risky-toggle-thumb {
+  transform: translateX(14px);
+}
+
+.risky-toggle-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  background: var(--border-light);
+  color: var(--text-sub);
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.risky-toggle.is-on .risky-toggle-count {
+  background: var(--gold);
+  color: #1a1a1a;
 }
 
 @media (max-width: 900px) {
@@ -3691,6 +3886,15 @@ body {
   font-size: 1.5rem;
   font-weight: 700;
   fill: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.pie-chart-center-num-divider {
+  fill: var(--text-muted);
+  font-weight: 500;
+}
+.pie-chart-center-num-total {
+  fill: var(--text-sub);
+  font-weight: 600;
 }
 .pie-chart-center-label {
   font-size: 0.7rem;

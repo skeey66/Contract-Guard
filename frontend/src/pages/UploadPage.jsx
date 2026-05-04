@@ -115,10 +115,23 @@ function TiltCard({ children, className, style }) {
   );
 }
 
+// 분석 진행 단계 정의 — 시간 기반 추정 (실제 평균 분석 시간 ~120초 가정)
+// 백엔드는 동기 endpoint라 실시간 진행 신호가 없음 → 시간 기반 가짜 진행률
+// (사용자 답답함 해소가 목적, 진짜 진행률은 SSE 도입 시 교체)
+const ANALYSIS_STEPS = [
+  { key: "extract", label: "문서 텍스트 추출", at: 0 },
+  { key: "detect", label: "계약 유형 자동 감지", at: 3000 },
+  { key: "retrieve", label: "법률·판례 하이브리드 검색", at: 8000 },
+  { key: "analyze", label: "AI 위험 분석", at: 15000 },
+];
+const ESTIMATED_ANALYSIS_MS = 120000; // 평균 120초
+
 export default function UploadPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [progress, setProgress] = useState("");
+  const [progressPct, setProgressPct] = useState(0);
+  const [activeStepIdx, setActiveStepIdx] = useState(0);
+  const [elapsedSec, setElapsedSec] = useState(0);
   const [kbStats, setKbStats] = useState({ total: 0, laws: 0, judgments: 0, clauses: 0 });
   const navigate = useNavigate();
   const { refresh: refreshAnalyses } = useAnalyses();
@@ -137,38 +150,47 @@ export default function UploadPage() {
   async function handleFileSelect(file) {
     setLoading(true);
     setError(null);
-    setProgress("문서 업로드 및 분석 중...");
+    setProgressPct(0);
+    setActiveStepIdx(0);
+    setElapsedSec(0);
 
-    const steps = [
-      { msg: "문서 텍스트 추출 중...", delay: 3000 },
-      { msg: "계약 유형 자동 감지 중...", delay: 5000 },
-      { msg: "관련 법률 및 판례 하이브리드 검색 중...", delay: 8000 },
-      { msg: "AI 위험 분석 진행 중... (잠시만 기다려주세요)", delay: 15000 },
-    ];
-
-    const timers = steps.map(({ msg, delay }) =>
-      setTimeout(() => setProgress(msg), delay)
-    );
+    const startTime = Date.now();
+    // 200ms마다 진행률·단계·경과시간 업데이트
+    const tickHandle = setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      setElapsedSec(Math.floor(elapsed / 1000));
+      // 진행률은 0~95% (실제 완료 시 100% 점프 — 정직한 표시)
+      setProgressPct(Math.min(95, (elapsed / ESTIMATED_ANALYSIS_MS) * 100));
+      // 현재 시간에 맞는 가장 마지막 단계 인덱스
+      const idx = ANALYSIS_STEPS.reduce(
+        (acc, s, i) => (s.at <= elapsed ? i : acc), 0
+      );
+      setActiveStepIdx(idx);
+    }, 200);
 
     try {
       const data = await uploadDocument(file);
       if (data.status === "completed" && data.result) {
-        // URL에 analysisId를 포함시켜 새로고침/직접접근 복원이 가능하도록 한다
+        clearInterval(tickHandle);
+        setProgressPct(100);
+        setActiveStepIdx(ANALYSIS_STEPS.length);
         const id = data.result.id;
-        // 사이드바 이력이 즉시 최신화되도록 목록을 새로 불러온다 (실패해도 이동은 그대로 진행)
         refreshAnalyses().catch(() => {});
-        navigate(`/result/${encodeURIComponent(id)}`, { state: { result: data.result } });
+        // 100% 채움 잠깐 보여주고 이동 (사용자 완료감)
+        setTimeout(() => {
+          navigate(`/result/${encodeURIComponent(id)}`, { state: { result: data.result } });
+        }, 300);
       } else {
         setError(data.error || "분석에 실패했습니다.");
+        clearInterval(tickHandle);
+        setLoading(false);
       }
     } catch (err) {
       const msg =
         err.response?.data?.detail || err.message || "서버 오류가 발생했습니다.";
       setError(msg);
-    } finally {
-      timers.forEach(clearTimeout);
+      clearInterval(tickHandle);
       setLoading(false);
-      setProgress("");
     }
   }
 
@@ -204,11 +226,34 @@ export default function UploadPage() {
             <FileUploader onFileSelect={handleFileSelect} disabled={loading} />
 
             {loading && (
-              <div className="loading-indicator">
-                <div className="loading-bar">
-                  <div className="loading-bar-fill" />
+              <div className="analysis-progress" role="status" aria-live="polite">
+                <div className="analysis-progress-head">
+                  <span className="analysis-progress-pct">{Math.round(progressPct)}%</span>
+                  <span className="analysis-progress-elapsed">경과 {elapsedSec}초</span>
                 </div>
-                <p>{progress}</p>
+                <div className="analysis-progress-bar">
+                  <div
+                    className="analysis-progress-bar-fill"
+                    style={{ width: `${progressPct}%` }}
+                  />
+                </div>
+                <ul className="analysis-progress-steps">
+                  {ANALYSIS_STEPS.map((step, i) => {
+                    const status =
+                      i < activeStepIdx ? "done" : i === activeStepIdx ? "active" : "pending";
+                    return (
+                      <li
+                        key={step.key}
+                        className={`analysis-progress-step is-${status}`}
+                      >
+                        <span className="analysis-progress-step-mark" aria-hidden="true">
+                          {status === "done" ? "✓" : status === "active" ? "◐" : "○"}
+                        </span>
+                        <span className="analysis-progress-step-label">{step.label}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
               </div>
             )}
 

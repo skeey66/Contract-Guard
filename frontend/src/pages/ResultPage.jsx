@@ -556,7 +556,18 @@ function SummaryRenderer({ text }) {
     return <p className="dash-summary-text">분석된 조항을 종합한 요약입니다.</p>;
   }
 
-  const sections = parseSummarySections(text);
+  // "분석 통계" 섹션은 표시 제외 (대시보드 카드·헤더 배지에서 이미 노출)
+  // "주의 깊게 살펴볼 조항"은 "권고사항" 바로 아래로 재배치 (LLM 출력 순서와 무관)
+  const baseSections = parseSummarySections(text).filter((sec) => sec.label !== "분석 통계");
+  const sections = (() => {
+    const cautionIdx = baseSections.findIndex((s) => s.label === "주의 깊게 살펴볼 조항");
+    const recIdx = baseSections.findIndex((s) => s.label === "권고사항");
+    if (cautionIdx === -1 || recIdx === -1) return baseSections;
+    const caution = baseSections[cautionIdx];
+    const without = baseSections.filter((_, i) => i !== cautionIdx);
+    const newRecIdx = without.findIndex((s) => s.label === "권고사항");
+    return [...without.slice(0, newRecIdx + 1), caution, ...without.slice(newRecIdx + 1)];
+  })();
   if (sections.length === 0) {
     return <p className="dash-summary-text">{text}</p>;
   }
@@ -564,10 +575,7 @@ function SummaryRenderer({ text }) {
   return (
     <div className="dash-summary">
       {sections.map((sec, i) => (
-        <div
-          key={i}
-          className={`dash-summary-section ${sec.label === "분석 통계" ? "dash-summary-stats" : ""}`}
-        >
+        <div key={i} className="dash-summary-section">
           {sec.label && <h4 className="dash-summary-label">{sec.label}</h4>}
           {/* LLM이 종합 요약·권고사항에서 강조한 부분(`**X**`)은 형광펜으로 표시 */}
           <p className="dash-summary-body">{renderWithMdMarks(sec.body)}</p>
@@ -1508,7 +1516,6 @@ export default function ResultPage() {
     [result]
   );
 
-  // "위험 조항만 보기" 필터 — UI/UX 개선안 #4 (위험 조항 빠른 탐색)
   const [showRiskyOnly, setShowRiskyOnly] = useState(false);
   const visibleClauses = useMemo(
     () => (showRiskyOnly ? orderedClauses.filter((a) => a.risk_level !== "safe") : orderedClauses),
@@ -1605,7 +1612,6 @@ export default function ResultPage() {
 
   return (
     <div className="result-page result-page-split">
-      {/* UI/UX 개선안 #1 — 상단 헤더 강화: 메타데이터 + 위험도 카운트 + 액션 버튼 */}
       <div className="result-top-bar result-top-bar-v2">
         <div className="result-top-back">
           <button className="back-button" onClick={() => navigate("/")}>
@@ -1632,14 +1638,21 @@ export default function ResultPage() {
           </div>
         </div>
         <div className="result-top-actions">
-          <button
-            type="button"
-            className={`top-action-btn${showRiskyOnly ? " top-action-btn-active" : ""}`}
-            onClick={() => setShowRiskyOnly((v) => !v)}
-            title="안전 조항을 숨기고 위험·검토 필요 조항만 표시"
-          >
-            {showRiskyOnly ? "전체 조항" : `위험 조항만 (${riskyCount})`}
-          </button>
+          <div className="risky-toggle-wrap">
+            <span className="risky-toggle-label">위험 조항만</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showRiskyOnly}
+              className={`risky-toggle${showRiskyOnly ? " is-on" : ""}`}
+              onClick={() => setShowRiskyOnly((v) => !v)}
+              title="안전 조항을 숨기고 위험·검토 필요 조항만 표시"
+            >
+              <span className="risky-toggle-track">
+                <span className="risky-toggle-thumb" />
+              </span>
+            </button>
+          </div>
         </div>
       </div>
 

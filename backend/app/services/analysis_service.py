@@ -98,19 +98,6 @@ def _categorize_source(source: str) -> str:
     return "law"
 
 
-def _is_strong_evidence(ref: dict) -> bool:
-    """frontend shouldDisplayRef와 동일 기준 — 약한 매칭은 등급 근거로 인정 X.
-    - both: ≥0.5 / vector-only: ≥0.65 / bm25-only: 가짜 매칭 위험으로 항상 제외.
-    """
-    src = ref.get("match_source", "vector")
-    sim = ref.get("similarity", 0) or 0
-    if src == "both":
-        return sim >= 0.5
-    if src == "vector":
-        return sim >= 0.65
-    return False
-
-
 _WS_NORM_RE = re.compile(r"\s+")
 
 # 위험 시그널 단어 — quote 폴백 자동 추출용 (도메인 중립).
@@ -217,22 +204,18 @@ def _reclassify_by_evidence(
     analysis_status: str,
     refs: list[dict],
 ) -> tuple[RiskLevel, str]:
-    """LLM 위험 판정을 데이터 출처와 매칭 강도에 따라 등급 재분류 (C1: unfair_clause만 medium 근거).
+    """LLM 위험 판정을 데이터 출처와 매칭 강도에 따라 등급 재분류.
 
-    임대차 도메인은 KB에 judgment ref가 매우 풍부해 sim 0.6+ 매칭이 정상 조항에서도
-    흔하게 발생 (noise). 따라서 medium 자격은 'unfair_clause' 매칭만 인정하고
-    임계값도 0.7로 상향 — 진짜 불공정 사례와 강한 의미 매칭만 medium 유지.
-
-    매칭 강도 (BM25-only 제외):
-    - very_strong (sim ≥ 0.75): high 회복 가능
-    - strong (sim ≥ 0.7): medium 자격
+    medium 자격은 'unfair_clause' 매칭만 인정 — judgment·law 매칭은 정상 조항에서도
+    흔하게 발생해 noise이고, 매칭 강도가 높다고 "위반 근거"인 것은 아니다.
+    임계값은 BM25-only 제외 + 의미 매칭 sim ≥ 0.7.
 
     분류:
     - HIGH (법률 위반):
       - rule_high / kb_high (검증된 패턴)
-      - LLM high + very_strong unfair_clause 매칭
+      - LLM high + very_strong unfair_clause 매칭 (sim ≥ 0.75)
     - MEDIUM (계약자 불리):
-      - LLM high/medium + strong unfair_clause 매칭
+      - LLM high/medium + strong unfair_clause 매칭 (sim ≥ 0.7)
     - LOW (검토 권장):
       - LLM 위험 판정인데 strong unfair 매칭 없음
     - SAFE: rule_safe / kb_safe / evidence_filtered / missing / LLM safe
@@ -339,16 +322,20 @@ def _build_clause_analyses(
                 # 2차: 폴백 후에도 quote 없는 risk는 환각으로 간주
                 substantiated = [r for r in risks if r.quote and r.quote.strip()]
                 if not substantiated and risks:
-                    # 위험으로 판정했는데 본문에 위험 시그널 단어조차 없음 → 환각으로 간주
+                    # 위험으로 판정했지만 quote 누락 — 두 가지 가능성:
+                    # 1) LLM 환각 (실제 안전인데 위험 본 것)
+                    # 2) LLM이 위험 본질은 잡았지만 인용 표기 실패 (실제 위험)
+                    # safe로 강등하면 2)가 false negative로 묻힘 → LOW(검토 권장)로 분류해
+                    # 사용자가 직접 검토 가능하게 한다.
                     logger.info(
-                        f"조항 {clause.index} 환각 차단: 모든 risk가 quote 없음 (자동 폴백도 실패) → "
-                        f"{risk_level.value} → safe로 강등"
+                        f"조항 {clause.index} 증거 부족: 모든 risk가 quote 없음 → "
+                        f"{risk_level.value} → low(검토 권장)로 분류"
                     )
-                    risk_level = RiskLevel.SAFE
+                    risk_level = RiskLevel.LOW
                     risks = []
                     explanation = (
-                        "LLM이 위험으로 판단했으나 본문에서 직접 인용할 위험 부분을 "
-                        "제시하지 못해 (본문 명시 근거 부족) 안전 조항으로 판정합니다."
+                        "LLM이 위험 가능성을 시사했으나 본문에서 직접 인용할 근거를 "
+                        "제시하지 못했습니다. 위험 단정은 어렵지만 변호사 검토를 권장합니다."
                     )
                     analysis_status = "evidence_filtered"
                 elif len(substantiated) < len(risks):
@@ -360,9 +347,7 @@ def _build_clause_analyses(
                     )
                     risks = substantiated
 
-            # 데이터 출처 기반 등급 재분류 (A안):
-            # 같은 "위험" 판정도 KB 법률 매칭/불공정 약관 매칭/매칭 없음에 따라 등급 분리.
-            # → 사용자에게 등급의 근거가 references_detail로 즉시 추적 가능해진다.
+            # 데이터 출처 기반 등급 재분류 — 등급 근거를 references_detail로 추적 가능하게.
             new_level, new_status = _reclassify_by_evidence(
                 risk_level, analysis_status,
                 per_clause_refs.get(clause.index, []),

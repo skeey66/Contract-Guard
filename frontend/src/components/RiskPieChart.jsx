@@ -4,9 +4,9 @@
 // 도넛 차트는 단순 2분류 — 위험(빨강) vs 안전(초록).
 // 세부 분류(법률 위반/계약자 불리/검토 권장)는 헤더 배지·범례에서 별도 표시.
 const SEGMENTS = [
-  { key: "risky", label: "위험 조항", color: "var(--risk-high, #c0392b)",
+  { key: "risky", label: "검토 필요 조항", color: "var(--risk-high, #c0392b)",
     sourceKeys: ["high", "medium", "low"] },
-  { key: "safe", label: "안전", color: "var(--risk-safe, #2e7d32)",
+  { key: "safe", label: "안전한 조항", color: "var(--risk-safe, #2e7d32)",
     sourceKeys: ["safe"] },
 ];
 
@@ -93,14 +93,16 @@ export default function RiskPieChart({ counts = {}, size = 180, strokeWidth = 28
             {arc.pct}%
           </text>
         ))}
-        {/* 중앙 텍스트 */}
+        {/* 중앙 텍스트 — 검토 필요 / 전체 조항 */}
         <text
           x={center}
           y={center - 6}
           textAnchor="middle"
           className="pie-chart-center-num"
         >
-          {total}
+          <tspan>{aggCounts.risky || 0}</tspan>
+          <tspan className="pie-chart-center-num-divider"> / </tspan>
+          <tspan className="pie-chart-center-num-total">{total}</tspan>
         </text>
         <text
           x={center}
@@ -108,7 +110,7 @@ export default function RiskPieChart({ counts = {}, size = 180, strokeWidth = 28
           textAnchor="middle"
           className="pie-chart-center-label"
         >
-          전체 조항
+          검토 필요 / 전체
         </text>
       </svg>
 
